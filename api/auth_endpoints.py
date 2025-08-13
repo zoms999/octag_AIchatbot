@@ -19,6 +19,14 @@ from sqlalchemy import text, select
 from passlib.context import CryptContext
 import jwt
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # dotenv not available, environment variables should be set externally
+    pass
+
 from database.connection import get_async_session
 
 logger = logging.getLogger(__name__)
@@ -34,8 +42,13 @@ JWT_EXPIRATION_HOURS = 24
 # Password context for verification
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Security scheme
-security = HTTPBearer()
+import re
+from typing import Optional
+
+TOKEN_REGEX = re.compile(r'^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$')
+
+# Security scheme with soft error handling
+security = HTTPBearer(auto_error=False)
 
 # Pydantic models
 class LoginRequest(BaseModel):
@@ -109,15 +122,27 @@ def create_access_token(user_data: Dict[str, Any]) -> str:
     
     return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
-def verify_token(token: str) -> Optional[Dict[str, Any]]:
-    """JWT 토큰 검증"""
+def verify_token(token: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """JWT 토큰 검증: (payload, error_message) 반환"""
     try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        return payload
+        payload = jwt.decode(
+            token,
+            JWT_SECRET_KEY,
+            algorithms=[JWT_ALGORITHM],
+            options={"require": ["exp", "iat"]},
+            leeway=60
+        )
+        if payload.get("type") == "refresh":
+            return None, "Authorization 헤더에는 access 토큰만 사용할 수 있습니다."
+        return payload, None
     except jwt.ExpiredSignatureError:
-        return None
-    except jwt.JWTError:
-        return None
+        return None, "토큰이 만료되었습니다."
+    except jwt.InvalidSignatureError:
+        return None, "토큰 서명이 유효하지 않습니다."
+    except jwt.DecodeError:
+        return None, "토큰을 해석할 수 없습니다."
+    except Exception:
+        return None, "유효하지 않은 토큰입니다."
 
 async def log_login_attempt(db: AsyncSession, ac_gid: str, success: bool = True):
     """로그인 시도 로그 기록"""
@@ -142,19 +167,26 @@ async def log_login_attempt(db: AsyncSession, ac_gid: str, success: bool = True)
 
 # 인증 의존성
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_async_session)
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> Dict[str, Any]:
     """현재 사용자 정보 가져오기"""
-    token = credentials.credentials
-    payload = verify_token(token)
-    
-    if not payload:
+    if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token"
+            detail='Authorization 헤더가 누락되었거나 형식이 잘못되었습니다. 예) Bearer <access_token>'
         )
-    
+    raw = (credentials.credentials or "").strip()
+    if not TOKEN_REGEX.match(raw):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='잘못된 토큰 형식입니다. Authorization에는 access 토큰만 넣으세요. 예) Bearer <access_token>'
+        )
+    payload, err = verify_token(raw)
+    if err is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=err
+        )
     return payload
 
 @router.post(
@@ -460,6 +492,22 @@ async def verify_user_token(
         "user": current_user,
         "message": "토큰이 유효합니다"
     }
+
+class TokenBody(BaseModel):
+    token: str = Field(..., description="검증할 access 토큰")
+
+@router.post("/verify-token-body", summary="바디로 토큰 검증(디버깅용)")
+async def verify_user_token_body(payload: TokenBody) -> Dict[str, Any]:
+    token = payload.token.strip()
+    if not TOKEN_REGEX.match(token):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="JWT 형식이 아닙니다."
+        )
+    data, err = verify_token(token)
+    if err:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=err)
+    return {"valid": True, "user": data, "message": "토큰이 유효합니다"}
 
 @router.post(
     "/logout",
