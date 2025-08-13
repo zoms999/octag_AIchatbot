@@ -22,7 +22,7 @@ export interface ApiConfig {
 }
 
 export const defaultApiConfig: ApiConfig = {
-  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000',
+  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000/api',
   timeout: TIMEOUT_CONFIG.DEFAULT_TIMEOUT,
   retries: {
     maxRetries: RETRY_CONFIG.DEFAULT_MAX_RETRIES,
@@ -45,13 +45,17 @@ export const defaultApiConfig: ApiConfig = {
 // Environment-specific configurations
 export const getApiConfig = (): ApiConfig => {
   const env = process.env.NODE_ENV;
+  console.log('getApiConfig called:', { 
+    env, 
+    NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL 
+  });
 
   switch (env) {
     case 'development':
       return {
         ...defaultApiConfig,
         baseURL:
-          process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000',
+          process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000/api',
       };
 
     case 'production':
@@ -59,14 +63,14 @@ export const getApiConfig = (): ApiConfig => {
         ...defaultApiConfig,
         baseURL:
           process.env.NEXT_PUBLIC_API_BASE_URL ||
-          'https://api.aptitude-chatbot.com',
+          'https://api.aptitude-chatbot.com/api',
         timeout: 60000, // Longer timeout for production
       };
 
     case 'test':
       return {
         ...defaultApiConfig,
-        baseURL: 'http://localhost:8000',
+        baseURL: 'http://localhost:8000/api',
         timeout: 5000, // Shorter timeout for tests
         retries: {
           ...defaultApiConfig.retries,

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 # Note: Redis dependency removed - using database-based rate limiting
 
-from database.connection import get_async_session
+from database.connection import get_async_session, db_manager
 from database.models import ChatUser, ChatConversation, ChatDocument, ChatFeedback
 from api.auth_endpoints import get_current_user
 from database.repositories import DocumentRepository
@@ -103,9 +103,7 @@ RATE_LIMIT_WINDOW = 60  # seconds
     
 
 # Dependency to get RAG components
-async def get_rag_components(
-    db: AsyncSession = Depends(get_async_session)
-) -> tuple:
+async def get_rag_components() -> tuple:
     """Get initialized RAG components"""
     try:
         # Initialize vector embedder (singleton for cache reuse)
@@ -114,23 +112,13 @@ async def get_rag_components(
         # Initialize question processor
         question_processor = QuestionProcessor(vector_embedder)
         
-        # Initialize vector search service
-        vector_search_service = VectorSearchService(db)
-        
-        # Initialize context builder
-        context_builder = ContextBuilder(vector_search_service)
-        
-        # Initialize response generator
+        # These components will be initialized with sessions when needed
+        # Initialize response generator (doesn't need DB session)
         response_generator = ResponseGenerator()
-        
-        # Initialize document repository with global cache
-        document_repository = DocumentRepository(db, DocumentRepository.get_global_cache())
         
         return (
             question_processor,
-            context_builder, 
-            response_generator,
-            document_repository
+            response_generator
         )
         
     except Exception as e:
@@ -196,28 +184,28 @@ async def get_user_by_id(user_id: str, db: AsyncSession) -> ChatUser:
 )
 async def submit_feedback(
     payload: FeedbackRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_session)
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     try:
-        # Verify authenticated user matches feedback user
-        if current_user["user_id"] != payload.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied: You can only submit feedback for your own conversations"
+        async with db_manager.get_async_session() as db:
+            # Verify authenticated user matches feedback user
+            if current_user["user_id"] != payload.user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: You can only submit feedback for your own conversations"
+                )
+            
+            feedback = ChatFeedback(
+                conversation_id=UUID(payload.conversation_id),
+                user_id=UUID(payload.user_id),
+                rating=payload.rating,
+                helpful=payload.helpful,
+                comment=payload.comment,
+                tags=payload.tags or []
             )
-        
-        feedback = ChatFeedback(
-            conversation_id=UUID(payload.conversation_id),
-            user_id=UUID(payload.user_id),
-            rating=payload.rating,
-            helpful=payload.helpful,
-            comment=payload.comment,
-            tags=payload.tags or []
-        )
-        db.add(feedback)
-        await db.commit()
-        return {"status": "ok"}
+            db.add(feedback)
+            await db.commit()
+            return {"status": "ok"}
     except Exception as e:
         logger.error(f"Failed to submit feedback: {e}")
         raise HTTPException(status_code=500, detail="피드백 저장에 실패했습니다.")
@@ -231,7 +219,6 @@ async def submit_feedback(
 async def ask_question(
     request: ChatQuestionRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_session),
     rag_components: tuple = Depends(get_rag_components)
 ) -> ChatResponse:
     """
@@ -263,116 +250,123 @@ async def ask_question(
                 detail="Rate limit exceeded. Please wait before making another request."
             )
         
-        # Verify authenticated user matches request user
-        if current_user["user_id"] != request.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied: You can only ask questions for your own account"
-            )
-        
-        # Verify user exists
-        user = await get_user_by_id(request.user_id, db)
-        
-        # Unpack RAG components
-        question_processor, context_builder, response_generator, document_repository = rag_components
-        
-        # Get conversation context if conversation_id provided
-        conversation_context = None
-        if request.conversation_id:
-            try:
-                conv_uuid = UUID(request.conversation_id)
-                result = await db.execute(
-                    select(ChatConversation)
-                    .where(ChatConversation.user_id == user.user_id)
-                    .order_by(desc(ChatConversation.created_at))
-                    .limit(5)
+        # Get database session
+        async with db_manager.get_async_session() as db:
+            # Verify authenticated user matches request user
+            if current_user["user_id"] != request.user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: You can only ask questions for your own account"
                 )
-                recent_conversations = result.scalars().all()
-                
-                if recent_conversations:
-                    conversation_context = ConversationContext(
-                        user_id=request.user_id,
-                        previous_questions=[conv.question for conv in recent_conversations],
-                        previous_categories=[],  # Would need to store this
-                        conversation_depth=len(recent_conversations)
+            
+            # Verify user exists
+            user = await get_user_by_id(request.user_id, db)
+            
+            # Unpack RAG components
+            question_processor, response_generator = rag_components
+            
+            # Initialize database-dependent components
+            vector_search_service = VectorSearchService(db)
+            context_builder = ContextBuilder(vector_search_service)
+            document_repository = DocumentRepository(db, DocumentRepository.get_global_cache())
+        
+            # Get conversation context if conversation_id provided
+            conversation_context = None
+            if request.conversation_id:
+                try:
+                    conv_uuid = UUID(request.conversation_id)
+                    result = await db.execute(
+                        select(ChatConversation)
+                        .where(ChatConversation.user_id == user.user_id)
+                        .order_by(desc(ChatConversation.created_at))
+                        .limit(5)
                     )
-            except ValueError:
-                logger.warning(f"Invalid conversation_id format: {request.conversation_id}")
-        
-        # Process the question
-        q_start = datetime.now()
-        processed_question = await question_processor.process_question(
-            request.question, 
-            request.user_id,
-            conversation_context
-        )
-        
-        # Build context from retrieved documents
-        context = await context_builder.build_context(
-            processed_question,
-            request.user_id,
-            conversation_context.previous_questions[-1] if conversation_context else None
-        )
-        
-        # Generate response
-        response = await response_generator.generate_response(
-            context,
-            request.user_id,
-            conversation_context
-        )
-        
-        # Calculate processing time
-        processing_time = (datetime.now() - start_time).total_seconds()
-        await metrics_observe("chat_processing_seconds", processing_time)
-        
-        # Save conversation to database
-        conversation = ChatConversation(
-            user_id=user.user_id,
-            question=request.question,
-            response=response.content,
-            retrieved_doc_ids=[doc.document.doc_id if isinstance(doc.document.doc_id, UUID) else UUID(doc.document.doc_id) for doc in context.retrieved_documents],
-            confidence_score=response.confidence_score,
-            processing_time=processing_time,
-            question_category=context.context_metadata.get("question_category"),
-            question_intent=context.context_metadata.get("question_intent"),
-            prompt_template=context.prompt_template.value,
-            ab_variant=request.conversation_id[-1] if request.conversation_id else None
-        )
-        
-        db.add(conversation)
-        await db.commit()
-        await db.refresh(conversation)
-        
-        # Format retrieved documents for response
-        retrieved_docs = []
-        for doc in context.retrieved_documents:
-            retrieved_docs.append({
-                "doc_id": str(doc.document.doc_id),
-                "doc_type": doc.document.doc_type,
-                "similarity_score": doc.similarity_score,
-                "relevance_score": doc.relevance_score,
-                "content_summary": doc.content_summary
-            })
-        
-        chat_response = ChatResponse(
-            conversation_id=str(conversation.conversation_id),
-            user_id=request.user_id,
-            question=request.question,
-            response=response.content,
-            retrieved_documents=retrieved_docs,
-            processing_time=processing_time,
-            confidence_score=response.confidence_score,
-            created_at=conversation.created_at.isoformat(),
-            ab_variant=conversation.ab_variant
-        )
-        
-        logger.info(
-            f"Processed question for user {request.user_id}: "
-            f"processing_time={processing_time:.2f}s, "
-            f"confidence={response.confidence_score:.2f}"
-        )
-        
-        return chat_response
+                    recent_conversations = result.scalars().all()
+                    
+                    if recent_conversations:
+                        conversation_context = ConversationContext(
+                            user_id=request.user_id,
+                            previous_questions=[conv.question for conv in recent_conversations],
+                            previous_categories=[],  # Would need to store this
+                            conversation_depth=len(recent_conversations)
+                        )
+                except ValueError:
+                    logger.warning(f"Invalid conversation_id format: {request.conversation_id}")
+            
+            # Process the question
+            q_start = datetime.now()
+            processed_question = await question_processor.process_question(
+                request.question,
+                request.user_id,
+                conversation_context
+            )
+            
+            # Build context from retrieved documents
+            context = await context_builder.build_context(
+                processed_question,
+                request.user_id,
+                conversation_context.previous_questions[-1] if conversation_context else None
+            )
+            
+            # Generate response
+            response = await response_generator.generate_response(
+                context,
+                request.user_id,
+                conversation_context
+            )
+            
+            # Calculate processing time
+            processing_time = (datetime.now() - start_time).total_seconds()
+            await metrics_observe("chat_processing_seconds", processing_time)
+            
+            # Save conversation to database
+            conversation = ChatConversation(
+                user_id=user.user_id,
+                question=request.question,
+                response=response.content,
+                retrieved_doc_ids=[doc.document.doc_id if isinstance(doc.document.doc_id, UUID) else UUID(doc.document.doc_id) for doc in context.retrieved_documents],
+                confidence_score=response.confidence_score,
+                processing_time=processing_time,
+                question_category=context.context_metadata.get("question_category"),
+                question_intent=context.context_metadata.get("question_intent"),
+                prompt_template=context.prompt_template.value,
+                ab_variant=request.conversation_id[-1] if request.conversation_id else None
+            )
+            
+            db.add(conversation)
+            await db.commit()
+            await db.refresh(conversation)
+            
+            # Format retrieved documents for response
+            retrieved_docs = []
+            for doc in context.retrieved_documents:
+                retrieved_docs.append({
+                    "doc_id": str(doc.document.doc_id),
+                    "doc_type": doc.document.doc_type,
+                    "similarity_score": doc.similarity_score,
+                    "relevance_score": doc.relevance_score,
+                    "content_summary": doc.content_summary
+                })
+            
+            chat_response = ChatResponse(
+                conversation_id=str(conversation.conversation_id),
+                user_id=request.user_id,
+                question=request.question,
+                response=response.content,
+                retrieved_documents=retrieved_docs,
+                processing_time=processing_time,
+                confidence_score=response.confidence_score,
+                created_at=conversation.created_at.isoformat(),
+                ab_variant=conversation.ab_variant
+            )
+            
+            logger.info(
+                f"Processed question for user {request.user_id}: "
+                f"processing_time={processing_time:.2f}s, "
+                f"confidence={response.confidence_score:.2f}"
+            )
+            
+            return chat_response
         
     except HTTPException:
         raise
@@ -394,8 +388,7 @@ async def get_conversation_history(
     user_id: str,
     limit: int = 20,
     offset: int = 0,
-    current_user: Dict[str, Any] = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_session)
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ) -> ConversationHistoryResponse:
     """
     Get conversation history for a user.
@@ -426,52 +419,53 @@ async def get_conversation_history(
                 detail="Offset must be non-negative"
             )
         
-        # Verify authenticated user matches request user
-        if current_user["user_id"] != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied: You can only view your own conversation history"
+        async with db_manager.get_async_session() as db:
+            # Verify authenticated user matches request user
+            if current_user["user_id"] != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: You can only view your own conversation history"
+                )
+            
+            # Verify user exists
+            user = await get_user_by_id(user_id, db)
+            
+            # Get total count
+            count_result = await db.execute(
+                select(ChatConversation)
+                .where(ChatConversation.user_id == user.user_id)
             )
-        
-        # Verify user exists
-        user = await get_user_by_id(user_id, db)
-        
-        # Get total count
-        count_result = await db.execute(
-            select(ChatConversation)
-            .where(ChatConversation.user_id == user.user_id)
-        )
-        total_count = len(count_result.scalars().all())
-        
-        # Get conversations with pagination
-        result = await db.execute(
-            select(ChatConversation)
-            .where(ChatConversation.user_id == user.user_id)
-            .order_by(desc(ChatConversation.created_at))
-            .limit(limit)
-            .offset(offset)
-        )
-        conversations = result.scalars().all()
-        
-        # Format response
-        conversation_items = []
-        for conv in conversations:
-            conversation_items.append(ConversationHistoryItem(
-                conversation_id=str(conv.conversation_id),
-                question=conv.question,
-                response=conv.response,
-                created_at=conv.created_at.isoformat(),
-                retrieved_doc_count=len(conv.retrieved_doc_ids) if conv.retrieved_doc_ids else 0
-            ))
-        
-        has_more = (offset + len(conversations)) < total_count
-        
-        return ConversationHistoryResponse(
-            user_id=user_id,
-            conversations=conversation_items,
-            total_count=total_count,
-            has_more=has_more
-        )
+            total_count = len(count_result.scalars().all())
+            
+            # Get conversations with pagination
+            result = await db.execute(
+                select(ChatConversation)
+                .where(ChatConversation.user_id == user.user_id)
+                .order_by(desc(ChatConversation.created_at))
+                .limit(limit)
+                .offset(offset)
+            )
+            conversations = result.scalars().all()
+            
+            # Format response
+            conversation_items = []
+            for conv in conversations:
+                conversation_items.append(ConversationHistoryItem(
+                    conversation_id=str(conv.conversation_id),
+                    question=conv.question,
+                    response=conv.response,
+                    created_at=conv.created_at.isoformat(),
+                    retrieved_doc_count=len(conv.retrieved_doc_ids) if conv.retrieved_doc_ids else 0
+                ))
+            
+            has_more = (offset + len(conversations)) < total_count
+            
+            return ConversationHistoryResponse(
+                user_id=user_id,
+                conversations=conversation_items,
+                total_count=total_count,
+                has_more=has_more
+            )
         
     except HTTPException:
         raise
@@ -509,9 +503,8 @@ manager = ConnectionManager()
 
 @router.websocket("/ws/{user_id}")
 async def websocket_endpoint(
-    websocket: WebSocket, 
-    user_id: str,
-    db: AsyncSession = Depends(get_async_session)
+    websocket: WebSocket,
+    user_id: str
 ):
     """
     WebSocket endpoint for real-time chat interactions.
@@ -527,8 +520,10 @@ async def websocket_endpoint(
     await manager.connect(websocket, user_id)
     
     try:
-        # Verify user exists
-        user = await get_user_by_id(user_id, db)
+        # Get database session
+        async with db_manager.get_async_session() as db:
+            # Verify user exists
+            user = await get_user_by_id(user_id, db)
         
         # Send welcome message
         welcome_msg = WebSocketMessage(
@@ -538,9 +533,14 @@ async def websocket_endpoint(
         )
         await manager.send_message(user_id, welcome_msg)
         
-        # Initialize RAG components
-        rag_components = await get_rag_components(db)
-        question_processor, context_builder, response_generator, document_repository = rag_components
+            # Initialize RAG components
+            rag_components = await get_rag_components()
+            question_processor, response_generator = rag_components
+            
+            # Initialize database-dependent components
+            vector_search_service = VectorSearchService(db)
+            context_builder = ContextBuilder(vector_search_service)
+            document_repository = DocumentRepository(db, DocumentRepository.get_global_cache())
         
         while True:
             # Receive message from client
@@ -686,9 +686,7 @@ async def websocket_endpoint(
     summary="Chat Service Health Check",
     description="Check health status of chat service components"
 )
-async def health_check(
-    db: AsyncSession = Depends(get_async_session)
-) -> Dict[str, Any]:
+async def health_check() -> Dict[str, Any]:
     """
     Check health status of chat service components.
     
@@ -701,21 +699,22 @@ async def health_check(
         "components": {}
     }
     
-    try:
-        # Check database connection
-        await db.execute(select(1))
-        health_status["components"]["database"] = "healthy"
-    except Exception as e:
-        health_status["components"]["database"] = f"unhealthy: {str(e)}"
-        health_status["status"] = "degraded"
-    
-    try:
-        # Check RAG components initialization
-        rag_components = await get_rag_components(db)
-        health_status["components"]["rag_engine"] = "healthy"
-    except Exception as e:
-        health_status["components"]["rag_engine"] = f"unhealthy: {str(e)}"
-        health_status["status"] = "degraded"
+    async with db_manager.get_async_session() as db:
+        try:
+            # Check database connection
+            await db.execute(select(1))
+            health_status["components"]["database"] = "healthy"
+        except Exception as e:
+            health_status["components"]["database"] = f"unhealthy: {str(e)}"
+            health_status["status"] = "degraded"
+        
+        try:
+            # Check RAG components initialization
+            rag_components = await get_rag_components()
+            health_status["components"]["rag_engine"] = "healthy"
+        except Exception as e:
+            health_status["components"]["rag_engine"] = f"unhealthy: {str(e)}"
+            health_status["status"] = "degraded"
 
     # Cache stats
     try:

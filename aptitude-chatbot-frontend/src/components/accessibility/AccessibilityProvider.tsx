@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { FontSizeManager, FontSizeLevel, keyboardShortcutsUtils } from '@/lib/accessibility';
+import { FontSizeManager, FontSizeLevel, keyboardShortcutsUtils, getLiveRegionManager } from '@/lib/accessibility';
 
 interface AccessibilityContextType {
   fontSize: FontSizeLevel;
@@ -51,6 +51,10 @@ export function AccessibilityProvider({ children }: AccessibilityProviderProps) 
 
     // Initialize keyboard shortcuts
     keyboardShortcutsUtils.initialize();
+
+    // Initialize live region manager for screen reader announcements
+    const liveRegionManager = getLiveRegionManager();
+    liveRegionManager.initialize();
 
     // Event listeners
     const handleFontSizeChange = (event: CustomEvent) => {

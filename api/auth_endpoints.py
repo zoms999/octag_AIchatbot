@@ -74,12 +74,17 @@ class OrganizationMemberInfo(BaseModel):
     sessionCode: str
     ac_id: str
 
+class AuthTokens(BaseModel):
+    """인증 토큰 모델"""
+    access: str
+    refresh: str
+
 class LoginResponse(BaseModel):
     """로그인 응답 모델"""
     success: bool
     message: str
     user: Optional[Union[PersonalUserInfo, OrganizationAdminInfo, OrganizationMemberInfo]] = None
-    token: Optional[str] = None
+    tokens: Optional[AuthTokens] = None
     expires_at: Optional[str] = None
 
 class TokenPayload(BaseModel):
@@ -123,7 +128,7 @@ async def log_login_attempt(db: AsyncSession, ac_gid: str, success: bool = True)
             await db.execute(
                 text("""
                     INSERT INTO mwd_log_login_account (login_date, user_agent, ac_gid) 
-                    VALUES (now(), :user_agent::json, :ac_gid::uuid)
+                    VALUES (now(), CAST(:user_agent AS json), CAST(:ac_gid AS uuid))
                 """),
                 {"user_agent": user_agent_json, "ac_gid": ac_gid}
             )
@@ -175,17 +180,24 @@ async def login(
         if request.loginType == "personal":
             logger.info(f"개인 사용자 로그인 시도: {request.username}")
             
-            # 계정 정보 조회
-            account_result = await db.execute(
-                text("""
-                    SELECT pe.pe_seq, pe.pe_name, ac.ac_gid, ac.ac_use, ac.ac_id
-                    FROM mwd_person pe
-                    JOIN mwd_account ac ON ac.pe_seq = pe.pe_seq 
-                    WHERE ac.ac_id = lower(:username) 
-                    AND ac.ac_pw = CRYPT(:password, ac.ac_pw)
-                """),
-                {"username": request.username, "password": request.password}
-            )
+            try:
+                # 계정 정보 조회
+                account_result = await db.execute(
+                    text("""
+                        SELECT pe.pe_seq, pe.pe_name, ac.ac_gid, ac.ac_use, ac.ac_id
+                        FROM mwd_person pe
+                        JOIN mwd_account ac ON ac.pe_seq = pe.pe_seq 
+                        WHERE ac.ac_id = lower(:username) 
+                        AND ac.ac_pw = CRYPT(:password, ac.ac_pw)
+                    """),
+                    {"username": request.username, "password": request.password}
+                )
+            except Exception as db_error:
+                logger.error(f"데이터베이스 쿼리 오류: {db_error}")
+                return LoginResponse(
+                    success=False,
+                    message="데이터베이스 연결 오류가 발생했습니다."
+                )
             
             account_row = account_result.fetchone()
             
@@ -240,7 +252,7 @@ async def login(
                         FROM mwd_person pe, mwd_account ac
                         LEFT OUTER JOIN mwd_choice_result cr ON cr.ac_gid = ac.ac_gid
                         LEFT OUTER JOIN mwd_answer_progress ap ON ap.cr_seq = cr.cr_seq
-                        WHERE ac.ac_gid = :ac_gid::uuid
+                        WHERE ac.ac_gid = CAST(:ac_gid AS uuid)
                         AND pe.pe_seq = ac.pe_seq AND ac.ac_use = 'Y'
                     ) t WHERE rnum = 1
                 """),
@@ -254,7 +266,7 @@ async def login(
                 text("""
                     SELECT pe.pe_sex 
                     FROM mwd_account ac, mwd_person pe 
-                    WHERE ac.ac_gid = :ac_gid::uuid
+                    WHERE ac.ac_gid = CAST(:ac_gid AS uuid)
                     AND pe.pe_seq = ac.pe_seq
                 """),
                 {"ac_gid": str(ac_gid)}
@@ -275,8 +287,11 @@ async def login(
             )
             
             # JWT 토큰 생성
-            token = create_access_token(user_info.dict())
+            access_token = create_access_token(user_info.dict())
             expires_at = (datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS)).isoformat()
+            
+            # 토큰 객체 생성 (refresh token은 현재 access token과 동일하게 설정)
+            tokens = AuthTokens(access=access_token, refresh=access_token)
             
             logger.info(f"개인 로그인 성공: {user_info.id}")
             
@@ -284,7 +299,7 @@ async def login(
                 success=True,
                 message="로그인 성공",
                 user=user_info,
-                token=token,
+                tokens=tokens,
                 expires_at=expires_at
             )
         
@@ -345,8 +360,11 @@ async def login(
                 )
                 
                 # JWT 토큰 생성
-                token = create_access_token(admin_info.dict())
+                access_token = create_access_token(admin_info.dict())
                 expires_at = (datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS)).isoformat()
+                
+                # 토큰 객체 생성
+                tokens = AuthTokens(access=access_token, refresh=access_token)
                 
                 logger.info(f"기관 관리자 로그인 성공: {admin_info.id}")
                 
@@ -354,7 +372,7 @@ async def login(
                     success=True,
                     message="기관 관리자 로그인 성공",
                     user=admin_info,
-                    token=token,
+                    tokens=tokens,
                     expires_at=expires_at
                 )
             
@@ -392,8 +410,11 @@ async def login(
                 )
                 
                 # JWT 토큰 생성
-                token = create_access_token(member_info.dict())
+                access_token = create_access_token(member_info.dict())
                 expires_at = (datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS)).isoformat()
+                
+                # 토큰 객체 생성
+                tokens = AuthTokens(access=access_token, refresh=access_token)
                 
                 logger.info(f"기관 소속 사용자 로그인 성공: {member_info.id}")
                 
@@ -401,7 +422,7 @@ async def login(
                     success=True,
                     message="기관 소속 사용자 로그인 성공",
                     user=member_info,
-                    token=token,
+                    tokens=tokens,
                     expires_at=expires_at
                 )
             
@@ -419,10 +440,10 @@ async def login(
             )
     
     except Exception as e:
-        logger.error(f"로그인 처리 중 오류: {e}")
+        logger.error(f"로그인 처리 중 오류: {e}", exc_info=True)
         return LoginResponse(
             success=False,
-            message="로그인 처리 중 오류가 발생했습니다."
+            message=f"로그인 처리 중 오류가 발생했습니다: {str(e)}"
         )
 
 @router.post(
@@ -482,7 +503,7 @@ async def get_current_user_info(
                     SELECT pe.pe_name, ac.ac_id, pe.pe_sex
                     FROM mwd_account ac
                     JOIN mwd_person pe ON pe.pe_seq = ac.pe_seq
-                    WHERE ac.ac_gid = :user_id::uuid
+                    WHERE ac.ac_gid = CAST(:user_id AS uuid)
                 """),
                 {"user_id": user_id}
             )
@@ -505,7 +526,7 @@ async def get_current_user_info(
                         SELECT i.ins_manager1_name as name, ac.ac_id
                         FROM mwd_account ac
                         JOIN mwd_institute i ON i.ins_seq = ac.ins_seq
-                        WHERE ac.ac_gid = :user_id::uuid AND ac.pe_seq = -1
+                        WHERE ac.ac_gid = CAST(:user_id AS uuid) AND ac.pe_seq = -1
                     """),
                     {"user_id": user_id}
                 )
@@ -515,7 +536,7 @@ async def get_current_user_info(
                         SELECT pe.pe_name as name, ac.ac_id
                         FROM mwd_account ac
                         JOIN mwd_person pe ON pe.pe_seq = ac.pe_seq
-                        WHERE ac.ac_gid = :user_id::uuid
+                        WHERE ac.ac_gid = CAST(:user_id AS uuid)
                     """),
                     {"user_id": user_id}
                 )
@@ -552,13 +573,14 @@ async def auth_health_check(
     """인증 서비스 상태 확인"""
     try:
         # 데이터베이스 연결 확인
-        await db.execute(text("SELECT 1"))
+        result = await db.execute(text("SELECT 1 as test"))
+        test_value = result.scalar()
         
         return {
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
             "components": {
-                "database": "healthy",
+                "database": "healthy" if test_value == 1 else "unhealthy",
                 "jwt": "healthy"
             }
         }
@@ -569,3 +591,44 @@ async def auth_health_check(
             "timestamp": datetime.utcnow().isoformat(),
             "error": str(e)
         }
+
+@router.post(
+    "/test-login",
+    summary="테스트 로그인 (데이터베이스 없이)",
+    description="데이터베이스 연결 없이 로그인 로직을 테스트합니다"
+)
+async def test_login(request: LoginRequest) -> LoginResponse:
+    """데이터베이스 연결 없이 로그인 테스트"""
+    logger.info(f"테스트 로그인 시도: username={request.username}, loginType={request.loginType}")
+    
+    # 하드코딩된 테스트 사용자
+    if request.username == "test999" and request.password == "111111" and request.loginType == "personal":
+        user_info = PersonalUserInfo(
+            id="test-user-id",
+            name="테스트 사용자",
+            sex="M",
+            isPaid=True,
+            productType="premium",
+            isExpired=False,
+            state="C",
+            ac_id="test999"
+        )
+        
+        access_token = create_access_token(user_info.dict())
+        expires_at = (datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS)).isoformat()
+        
+        # 토큰 객체 생성
+        tokens = AuthTokens(access=access_token, refresh=access_token)
+        
+        return LoginResponse(
+            success=True,
+            message="테스트 로그인 성공",
+            user=user_info,
+            tokens=tokens,
+            expires_at=expires_at
+        )
+    
+    return LoginResponse(
+        success=False,
+        message="테스트 로그인 실패: test999/111111을 사용하세요"
+    )

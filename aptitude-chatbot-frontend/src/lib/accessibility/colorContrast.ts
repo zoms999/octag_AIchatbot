@@ -93,6 +93,10 @@ export class ColorContrastChecker {
       passes: boolean;
     }> = [];
 
+    if (typeof document === 'undefined') {
+      return [];
+    }
+
     const textElements = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, span, a, button, label, input, textarea');
     
     textElements.forEach(element => {
@@ -124,6 +128,10 @@ export class ColorContrastChecker {
    * Get effective background color of an element
    */
   private getBackgroundColor(element: HTMLElement): string | null {
+    if (typeof document === 'undefined') {
+      return '#ffffff';
+    }
+
     let current: HTMLElement | null = element;
     
     while (current && current !== document.body) {
@@ -213,6 +221,9 @@ export const highContrastUtils = {
    * Check if high contrast mode is enabled
    */
   isHighContrastMode(): boolean {
+    if (typeof window === 'undefined') {
+      return false;
+    }
     return window.matchMedia('(prefers-contrast: high)').matches;
   },
 
@@ -220,6 +231,10 @@ export const highContrastUtils = {
    * Apply high contrast styles
    */
   applyHighContrastStyles() {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
     const style = document.createElement('style');
     style.id = 'high-contrast-styles';
     style.textContent = `
@@ -259,6 +274,10 @@ export const highContrastUtils = {
    * Remove high contrast styles
    */
   removeHighContrastStyles() {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
     const style = document.getElementById('high-contrast-styles');
     if (style) {
       style.remove();
@@ -270,6 +289,10 @@ export const highContrastUtils = {
    * Toggle high contrast mode
    */
   toggleHighContrast() {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
     if (document.documentElement.classList.contains('high-contrast')) {
       this.removeHighContrastStyles();
     } else {

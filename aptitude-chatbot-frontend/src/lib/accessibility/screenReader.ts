@@ -9,12 +9,23 @@ export class LiveRegionManager {
   private liveRegion: HTMLElement | null = null;
   private politeRegion: HTMLElement | null = null;
   private assertiveRegion: HTMLElement | null = null;
+  private initialized = false;
 
   constructor() {
-    this.createLiveRegions();
+    // Don't initialize immediately - wait for client-side initialization
   }
 
   private createLiveRegions() {
+    // Only run on client side
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
+
+    // Prevent double initialization
+    if (this.initialized) {
+      return;
+    }
+
     // Create polite live region
     this.politeRegion = document.createElement('div');
     this.politeRegion.setAttribute('aria-live', 'polite');
@@ -30,12 +41,26 @@ export class LiveRegionManager {
     this.assertiveRegion.className = 'sr-only';
     this.assertiveRegion.id = 'live-region-assertive';
     document.body.appendChild(this.assertiveRegion);
+
+    this.initialized = true;
+  }
+
+  /**
+   * Initialize the live regions (call this on client side)
+   */
+  initialize() {
+    this.createLiveRegions();
   }
 
   /**
    * Announce a message to screen readers
    */
   announce(message: string, priority: 'polite' | 'assertive' = 'polite') {
+    // Ensure initialization on client side
+    if (!this.initialized) {
+      this.initialize();
+    }
+
     const region = priority === 'assertive' ? this.assertiveRegion : this.politeRegion;
     
     if (region) {
@@ -86,12 +111,20 @@ export class LiveRegionManager {
    * Clean up live regions
    */
   destroy() {
-    if (this.politeRegion) {
-      document.body.removeChild(this.politeRegion);
+    if (typeof document === 'undefined') {
+      return;
     }
-    if (this.assertiveRegion) {
-      document.body.removeChild(this.assertiveRegion);
+
+    if (this.politeRegion && this.politeRegion.parentNode) {
+      this.politeRegion.parentNode.removeChild(this.politeRegion);
     }
+    if (this.assertiveRegion && this.assertiveRegion.parentNode) {
+      this.assertiveRegion.parentNode.removeChild(this.assertiveRegion);
+    }
+    
+    this.politeRegion = null;
+    this.assertiveRegion = null;
+    this.initialized = false;
   }
 }
 
@@ -210,7 +243,11 @@ export const screenReaderUtils = {
   /**
    * Create screen reader only text element
    */
-  createSROnlyText(text: string): HTMLElement {
+  createSROnlyText(text: string): HTMLElement | null {
+    if (typeof document === 'undefined') {
+      return null;
+    }
+    
     const element = document.createElement('span');
     element.className = 'sr-only';
     element.textContent = text;
@@ -222,7 +259,9 @@ export const screenReaderUtils = {
    */
   addSROnlyText(element: HTMLElement, text: string) {
     const srText = this.createSROnlyText(text);
-    element.appendChild(srText);
+    if (srText) {
+      element.appendChild(srText);
+    }
   },
 
   /**
@@ -253,5 +292,40 @@ export const screenReaderUtils = {
   }
 };
 
-// Global live region manager instance
-export const liveRegionManager = new LiveRegionManager();
+// Global live region manager instance - lazy initialization
+let _liveRegionManager: LiveRegionManager | null = null;
+
+export const getLiveRegionManager = (): LiveRegionManager => {
+  if (!_liveRegionManager) {
+    _liveRegionManager = new LiveRegionManager();
+  }
+  return _liveRegionManager;
+};
+
+// For backward compatibility
+export const liveRegionManager = {
+  get instance() {
+    return getLiveRegionManager();
+  },
+  announce: (message: string, priority: 'polite' | 'assertive' = 'polite') => {
+    return getLiveRegionManager().announce(message, priority);
+  },
+  announceStatus: (status: string) => {
+    return getLiveRegionManager().announceStatus(status);
+  },
+  announceError: (error: string) => {
+    return getLiveRegionManager().announceError(error);
+  },
+  announceSuccess: (message: string) => {
+    return getLiveRegionManager().announceSuccess(message);
+  },
+  announceLoading: (message?: string) => {
+    return getLiveRegionManager().announceLoading(message);
+  },
+  destroy: () => {
+    return getLiveRegionManager().destroy();
+  },
+  initialize: () => {
+    return getLiveRegionManager().initialize();
+  }
+};

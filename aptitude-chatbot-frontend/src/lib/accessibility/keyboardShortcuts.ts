@@ -32,8 +32,11 @@ export class KeyboardShortcutsManager {
   }
 
   constructor() {
-    this.setupEventListeners();
-    this.registerDefaultShortcuts();
+    // Only initialize on client side
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      this.setupEventListeners();
+      this.registerDefaultShortcuts();
+    }
   }
 
   /**
@@ -109,6 +112,9 @@ export class KeyboardShortcutsManager {
    * Setup event listeners
    */
   private setupEventListeners() {
+    if (typeof document === 'undefined') {
+      return;
+    }
     document.addEventListener('keydown', this.handleKeydown.bind(this));
   }
 
@@ -291,6 +297,9 @@ export class KeyboardShortcutsManager {
    * Navigate to a specific tab
    */
   private navigateToTab(tab: string) {
+    if (typeof window === 'undefined') {
+      return;
+    }
     const event = new CustomEvent('navigateToTab', { detail: { tab } });
     window.dispatchEvent(event);
   }
@@ -299,6 +308,9 @@ export class KeyboardShortcutsManager {
    * Trigger new chat
    */
   private triggerNewChat() {
+    if (typeof window === 'undefined') {
+      return;
+    }
     const event = new CustomEvent('newChat');
     window.dispatchEvent(event);
   }
@@ -307,6 +319,9 @@ export class KeyboardShortcutsManager {
    * Trigger clear chat
    */
   private triggerClearChat() {
+    if (typeof window === 'undefined') {
+      return;
+    }
     const event = new CustomEvent('clearChat');
     window.dispatchEvent(event);
   }
@@ -315,6 +330,9 @@ export class KeyboardShortcutsManager {
    * Increase font size
    */
   private increaseFontSize() {
+    if (typeof window === 'undefined') {
+      return;
+    }
     const event = new CustomEvent('increaseFontSize');
     window.dispatchEvent(event);
   }
@@ -323,6 +341,9 @@ export class KeyboardShortcutsManager {
    * Decrease font size
    */
   private decreaseFontSize() {
+    if (typeof window === 'undefined') {
+      return;
+    }
     const event = new CustomEvent('decreaseFontSize');
     window.dispatchEvent(event);
   }
@@ -331,6 +352,9 @@ export class KeyboardShortcutsManager {
    * Reset font size
    */
   private resetFontSize() {
+    if (typeof window === 'undefined') {
+      return;
+    }
     const event = new CustomEvent('resetFontSize');
     window.dispatchEvent(event);
   }
@@ -339,6 +363,9 @@ export class KeyboardShortcutsManager {
    * Toggle high contrast mode
    */
   private toggleHighContrast() {
+    if (typeof window === 'undefined') {
+      return;
+    }
     const event = new CustomEvent('toggleHighContrast');
     window.dispatchEvent(event);
   }
@@ -347,6 +374,9 @@ export class KeyboardShortcutsManager {
    * Toggle theme
    */
   private toggleTheme() {
+    if (typeof window === 'undefined') {
+      return;
+    }
     const event = new CustomEvent('toggleTheme');
     window.dispatchEvent(event);
   }
@@ -355,6 +385,9 @@ export class KeyboardShortcutsManager {
    * Show help modal
    */
   private showHelp() {
+    if (typeof window === 'undefined') {
+      return;
+    }
     if (this.helpModalOpen) return;
     
     this.helpModalOpen = true;
@@ -366,6 +399,9 @@ export class KeyboardShortcutsManager {
    * Close modal
    */
   private closeModal() {
+    if (typeof window === 'undefined') {
+      return;
+    }
     const event = new CustomEvent('closeModal');
     window.dispatchEvent(event);
     this.helpModalOpen = false;
@@ -375,6 +411,9 @@ export class KeyboardShortcutsManager {
    * Focus search field
    */
   private focusSearch() {
+    if (typeof document === 'undefined') {
+      return;
+    }
     const searchInput = document.querySelector('input[type="search"], input[placeholder*="검색"], input[placeholder*="search"]') as HTMLInputElement;
     if (searchInput) {
       searchInput.focus();

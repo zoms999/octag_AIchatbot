@@ -33,8 +33,11 @@ export class FontSizeManager {
   }
 
   constructor() {
-    this.loadSettings();
-    this.applyFontSize();
+    // Only initialize on client side
+    if (typeof window !== 'undefined') {
+      this.loadSettings();
+      this.applyFontSize();
+    }
   }
 
   /**
@@ -85,6 +88,10 @@ export class FontSizeManager {
    * Apply font size to document
    */
   private applyFontSize() {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
     const settings = this.fontSizeSettings[this.currentLevel];
     const root = document.documentElement;
 
@@ -106,6 +113,10 @@ export class FontSizeManager {
    * Inject font size styles
    */
   private injectFontSizeStyles() {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
     const existingStyle = document.getElementById('accessibility-font-size-styles');
     if (existingStyle) {
       existingStyle.remove();
@@ -204,6 +215,10 @@ export class FontSizeManager {
    * Save settings to localStorage
    */
   private saveSettings() {
+    if (typeof localStorage === 'undefined') {
+      return;
+    }
+
     try {
       localStorage.setItem(this.storageKey, JSON.stringify({
         level: this.currentLevel
@@ -217,6 +232,10 @@ export class FontSizeManager {
    * Load settings from localStorage
    */
   private loadSettings() {
+    if (typeof localStorage === 'undefined') {
+      return;
+    }
+
     try {
       const saved = localStorage.getItem(this.storageKey);
       if (saved) {
@@ -234,6 +253,10 @@ export class FontSizeManager {
    * Notify about font size changes
    */
   private notifyChange() {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
     const event = new CustomEvent('fontSizeChanged', {
       detail: {
         level: this.currentLevel,
@@ -261,6 +284,9 @@ export class FontSizeManager {
    * Check if user prefers large text
    */
   static prefersLargeText(): boolean {
+    if (typeof window === 'undefined') {
+      return false;
+    }
     return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   }
 }
@@ -281,6 +307,10 @@ export const fontSizeUtils = {
    */
   initialize() {
     const manager = FontSizeManager.getInstance();
+    
+    if (typeof window === 'undefined') {
+      return manager;
+    }
     
     // Listen for system preference changes
     const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');

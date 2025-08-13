@@ -6,17 +6,34 @@ export class AuthService {
    * Login with credentials
    */
   static async login(credentials: LoginCredentials): Promise<AuthResponse> {
-    const response = await apiClient.post<AuthResponse>('/auth/login', {
-      username: credentials.username,
-      password: credentials.password,
-      login_type: credentials.loginType,
-    });
+    console.log('AuthService.login called with:', credentials);
+    
+    try {
+      const response = await apiClient.post<any>('/auth/login', {
+        username: credentials.username,
+        password: credentials.password,
+        loginType: credentials.loginType,
+      });
 
-    if (!response.success || !response.data) {
-      throw new Error(response.message || 'Login failed');
+      console.log('API response:', response);
+
+      // The response from apiClient is wrapped, so we need to check the actual data
+      const loginResponse = response.data || response;
+      
+      console.log('Login response data:', loginResponse);
+      
+      if (!loginResponse.success) {
+        throw new Error(loginResponse.message || 'Login failed');
+      }
+
+      return {
+        user: loginResponse.user,
+        tokens: loginResponse.tokens,
+      };
+    } catch (error) {
+      console.error('AuthService.login error:', error);
+      throw error;
     }
-
-    return response.data;
   }
 
   /**

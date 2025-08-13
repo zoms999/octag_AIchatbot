@@ -12,9 +12,11 @@ export class FocusTrap {
   private previouslyFocusedElement: HTMLElement | null = null;
 
   constructor(private container: HTMLElement) {
-    this.previouslyFocusedElement = document.activeElement as HTMLElement;
-    this.updateFocusableElements();
-    this.setupEventListeners();
+    if (typeof document !== 'undefined') {
+      this.previouslyFocusedElement = document.activeElement as HTMLElement;
+      this.updateFocusableElements();
+      this.setupEventListeners();
+    }
   }
 
   private updateFocusableElements() {
@@ -38,10 +40,13 @@ export class FocusTrap {
   }
 
   private setupEventListeners() {
-    document.addEventListener('keydown', this.handleKeydown);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('keydown', this.handleKeydown);
+    }
   }
 
   private handleKeydown = (event: KeyboardEvent) => {
+    if (typeof document === 'undefined') return;
     if (event.key !== 'Tab') return;
 
     if (this.focusableElements.length === 0) {
@@ -72,7 +77,9 @@ export class FocusTrap {
   }
 
   public deactivate() {
-    document.removeEventListener('keydown', this.handleKeydown);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('keydown', this.handleKeydown);
+    }
     if (this.previouslyFocusedElement) {
       this.previouslyFocusedElement.focus();
     }
@@ -100,6 +107,9 @@ export const focusUtils = {
    * Save current focus and return a function to restore it
    */
   saveFocus(): () => void {
+    if (typeof document === 'undefined') {
+      return () => {};
+    }
     const activeElement = document.activeElement as HTMLElement;
     return () => {
       if (activeElement && typeof activeElement.focus === 'function') {
@@ -112,6 +122,10 @@ export const focusUtils = {
    * Find the next focusable element
    */
   findNextFocusable(current: HTMLElement, direction: 'forward' | 'backward' = 'forward'): HTMLElement | null {
+    if (typeof document === 'undefined') {
+      return null;
+    }
+    
     const focusableElements = Array.from(
       document.querySelectorAll(
         'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]'
@@ -132,7 +146,7 @@ export const focusUtils = {
    * Check if an element is currently visible and focusable
    */
   isElementFocusable(element: HTMLElement): boolean {
-    if (!element) return false;
+    if (!element || typeof window === 'undefined') return false;
 
     // Check if element is hidden
     const style = window.getComputedStyle(element);

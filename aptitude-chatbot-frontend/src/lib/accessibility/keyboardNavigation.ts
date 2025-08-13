@@ -69,6 +69,10 @@ export function handleKeyboardNavigation(
   
   if (focusableElements.length === 0) return false;
 
+  if (typeof document === 'undefined') {
+    return false;
+  }
+  
   const currentIndex = focusableElements.indexOf(document.activeElement as HTMLElement);
   let nextIndex = currentIndex;
 
@@ -182,6 +186,10 @@ export class RovingTabindexManager {
   }
 
   private updateCurrentIndex() {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    
     const activeElement = document.activeElement as HTMLElement;
     const index = this.elements.indexOf(activeElement);
     if (index !== -1) {

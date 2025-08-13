@@ -154,10 +154,10 @@ class DatabaseManager:
 db_manager = DatabaseManager()
 
 # Convenience functions for getting sessions
-async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_async_session() -> AsyncSession:
     """Get async database session"""
-    async with db_manager.get_async_session() as session:
-        yield session
+    session_factory = db_manager.get_async_session_factory()
+    return session_factory()
 
 def get_sync_session():
     """Get sync database session"""

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Debug</title>
+</head>
+<body>
+    <h1>API Configuration Debug</h1>
+    <button onclick="testConfig()">Test API Config</button>
+    <button onclick="testDirectCall()">Test Direct API Call</button>
+    <div id="result"></div>
+
+    <script>
+        function testConfig() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = `
+                <h3>Environment Variables:</h3>
+                <p>NEXT_PUBLIC_API_BASE_URL: ${process.env.NEXT_PUBLIC_API_BASE_URL || 'undefined'}</p>
+                <p>NODE_ENV: ${process.env.NODE_ENV || 'undefined'}</p>
+            `;
+        }
+
+        async function testDirectCall() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = 'Testing direct API call...';
+            
+            try {
+                const response = await fetch('http://localhost:8000/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        username: 'test999',
+                        password: '111111',
+                        loginType: 'personal'
+                    })
+                });
+                
+                const data = await response.json();
+                resultDiv.innerHTML = `
+                    <h3>Direct API Call Result:</h3>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <h3>Direct API Call Error:</h3>
+                    <p>${error.message}</p>
+                `;
+            }
+        }
+    </script>
+</body>
+</html>

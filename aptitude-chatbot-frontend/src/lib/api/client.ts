@@ -16,6 +16,8 @@ export class ApiClient {
   constructor(config?: Partial<ApiConfig>) {
     this.config = { ...getApiConfig(), ...config };
 
+    console.log('ApiClient initialized with baseURL:', this.config.baseURL);
+
     this.axiosInstance = axios.create({
       baseURL: this.config.baseURL,
       timeout: this.config.timeout,
@@ -142,6 +144,8 @@ export class ApiClient {
       requiresAuth = true,
       showErrorToast = true,
     } = options;
+
+    console.log(`API Request: ${method} ${this.config.baseURL}${url}`, { data, params });
 
     // Check network status before making request
     const networkStatus = NetworkMonitor.getStatus();
