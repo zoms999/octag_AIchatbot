@@ -501,9 +501,19 @@ class VectorSearchService:
             metadata = {}
             
             if include_metadata:
+                # Handle timezone-aware datetime comparison
+                doc_created = document.created_at
+                if doc_created.tzinfo is not None:
+                    # Document has timezone info, make utcnow timezone-aware
+                    from datetime import timezone
+                    current_time = datetime.now(timezone.utc)
+                else:
+                    # Document is naive, use naive utcnow
+                    current_time = datetime.utcnow()
+                
                 metadata.update({
                     'original_rank': i + 1,
-                    'document_age_days': (datetime.utcnow() - document.created_at).days,
+                    'document_age_days': (current_time - doc_created).days,
                     'document_type': document.doc_type,
                     'content_length': len(document.summary_text)
                 })
@@ -513,7 +523,13 @@ class VectorSearchService:
             
             if ranking_strategy == SearchResultRanking.RECENCY_WEIGHTED:
                 # Boost recent documents
-                age_days = (datetime.utcnow() - document.created_at).days
+                doc_created = document.created_at
+                if doc_created.tzinfo is not None:
+                    from datetime import timezone
+                    current_time = datetime.now(timezone.utc)
+                else:
+                    current_time = datetime.utcnow()
+                age_days = (current_time - doc_created).days
                 recency_boost = max(0, 1 - (age_days / 30))  # Boost decreases over 30 days
                 adjusted_score = similarity * (1 + 0.1 * recency_boost)
                 metadata['recency_boost'] = recency_boost
@@ -534,7 +550,13 @@ class VectorSearchService:
             
             elif ranking_strategy == SearchResultRanking.HYBRID:
                 # Combine recency and type prioritization
-                age_days = (datetime.utcnow() - document.created_at).days
+                doc_created = document.created_at
+                if doc_created.tzinfo is not None:
+                    from datetime import timezone
+                    current_time = datetime.now(timezone.utc)
+                else:
+                    current_time = datetime.utcnow()
+                age_days = (current_time - doc_created).days
                 recency_boost = max(0, 1 - (age_days / 30))
                 
                 type_priorities = {

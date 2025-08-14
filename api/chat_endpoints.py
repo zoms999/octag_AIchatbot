@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional
 from uuid import UUID
 import asyncio
 import json
+import uuid
 
 from fastapi import APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
@@ -262,6 +263,30 @@ async def ask_question(
             # Verify user exists
             user = await get_user_by_id(request.user_id, db)
             
+            # Check if user has any documents
+            from sqlalchemy import func
+            doc_count_result = await db.execute(
+                select(func.count(ChatDocument.doc_id))
+                .where(ChatDocument.user_id == user.user_id)
+            )
+            doc_count = doc_count_result.scalar()
+            
+            if doc_count == 0:
+                logger.warning(f"User {request.user_id} has no documents in the system")
+                return ChatResponse(
+                    conversation_id=str(uuid.uuid4()),
+                    user_id=request.user_id,
+                    question=request.question,
+                    response="안녕하세요! 적성검사 결과를 찾을 수 없습니다. 적성검사를 먼저 완료해 주시기 바랍니다. 검사 완료 후 다시 질문해 주세요.",
+                    retrieved_documents=[],
+                    processing_time=(datetime.now() - start_time).total_seconds(),
+                    confidence_score=0.0,
+                    created_at=datetime.now().isoformat(),
+                    ab_variant=None
+                )
+            
+            logger.info(f"User {request.user_id} has {doc_count} documents in the system")
+            
             # Unpack RAG components
             question_processor, response_generator = rag_components
             
@@ -306,6 +331,14 @@ async def ask_question(
                 processed_question,
                 request.user_id,
                 conversation_context.previous_questions[-1] if conversation_context else None
+            )
+            
+            # Log context building results for debugging
+            logger.info(
+                f"Context built for user {request.user_id}: "
+                f"retrieved_docs={len(context.retrieved_documents)}, "
+                f"question_category={context.context_metadata.get('question_category')}, "
+                f"question_intent={context.context_metadata.get('question_intent')}"
             )
             
             # Generate response
@@ -704,6 +737,14 @@ async def health_check() -> Dict[str, Any]:
             # Check database connection
             await db.execute(select(1))
             health_status["components"]["database"] = "healthy"
+            
+            # Check user and document counts
+            user_count = await db.execute(select(func.count(ChatUser.user_id)))
+            doc_count = await db.execute(select(func.count(ChatDocument.doc_id)))
+            health_status["components"]["data_stats"] = {
+                "total_users": user_count.scalar(),
+                "total_documents": doc_count.scalar()
+            }
         except Exception as e:
             health_status["components"]["database"] = f"unhealthy: {str(e)}"
             health_status["status"] = "degraded"

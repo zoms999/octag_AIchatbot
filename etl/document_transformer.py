@@ -48,6 +48,68 @@ class DocumentTransformer:
     
     def _safe_get_value(self, data: Dict[str, Any], key: str, default: Any = None) -> Any:
         return data.get(key, default) if data else default
+    
+    def _generate_hypothetical_questions(self, summary: str, doc_type: str, content: Dict[str, Any]) -> List[str]:
+        """
+        주어진 요약문을 바탕으로 LLM을 사용하여 가상 질문을 생성합니다.
+        실제 구현에서는 LLM API 호출이 필요합니다.
+        """
+        # ----- 실제 구현 시 LLM 호출 예시 -----
+        # from your_llm_library import generate_text
+        # prompt = f"""
+        # 아래 내용은 사용자의 검사 결과 데이터의 일부입니다.
+        # 이 내용을 가장 잘 설명하고 요약하는 질문을 한국어로 3개만 생성해주세요.
+        # 질문은 사용자가 챗봇에게 물어볼 법한 자연스러운 대화체여야 합니다.
+        #
+        # 내용: "{summary}"
+        #
+        # 질문 (3개):
+        # 1.
+        # 2.
+        # 3.
+        # """
+        # generated_text = generate_text(prompt)
+        # questions = [line.strip() for line in generated_text.split('\n') if line.strip()]
+        # return questions
+        # -----------------------------------------
+        
+        # 지금은 테스트를 위해 규칙 기반으로 예시 질문을 생성합니다.
+        if "기본 정보" in summary:
+            return ["내 나이랑 성별 알려줘", "내 기본 정보 요약해줘", "내가 누구인지 알려줘"]
+        if "학력" in summary:
+            return ["내 최종학력은 뭐야?", "내가 졸업한 학교랑 전공 알려줘", "학력 정보 보여줘"]
+        if "직업 정보" in summary:
+            return ["내 직업이 뭐야?", "지금 다니는 회사랑 직무 알려줘", "경력 정보 요약해줘"]
+        if "주요 성향 분석" in summary:
+            return ["내 성격 유형 알려줘", "나의 대표적인 성향은 뭐야?", "성격 검사 결과 요약해줘"]
+        if "성향에 대한 상세 설명" in summary:
+            tendency_name = content.get("name", "내 성향")
+            return [f"{tendency_name} 성향은 어떤 특징이 있어?", f"{tendency_name}에 대해 자세히 설명해줘", f"내 성격 진단 결과 좀 더 알려줘"]
+        if "주요 강점" in summary:
+            return ["내 성격의 강점은 뭐야?", "내가 잘하는 건 뭐야?", "강점 분석 결과 보여줘"]
+        if "개선 영역" in summary:
+            return ["내 성격의 약점은 뭐야?", "내가 보완해야 할 점은?", "약점 분석 결과 알려줘"]
+        if "사고력: 내 점수" in summary:
+            skill_name = content.get("skill_name", "내 사고력")
+            return [f"내 {skill_name} 점수는 몇 점이야?", f"나는 {skill_name}이 강한 편이야?", f"{skill_name} 분석 결과 알려줘"]
+        if "성향 기반 추천 직업" in summary:
+            return ["내 성향에 맞는 직업 추천해줘", "나한테 어울리는 직업이 뭐야?", "진로 추천 결과 알려줘"]
+        if "역량 기반 추천 직업" in summary:
+            return ["내 역량으로 갈 수 있는 직업은?", "내 강점을 살릴 수 있는 직업 추천해줘", "역량 기반 직업 추천 결과 보여줘"]
+        
+        # 더 구체적인 패턴 매칭 추가
+        if "성향" in summary or "성격" in summary:
+            return ["내성향알려줘", "내 성격은 어떤 타입이야?", "성향 분석 결과 보여줘"]
+        if "사고력" in summary or "사고" in summary:
+            return ["내 사고력은 어때?", "사고 능력 분석 결과 알려줘", "내가 어떤 사고를 잘해?"]
+        if "직업" in summary or "진로" in summary:
+            return ["추천 직업 알려줘", "나한테 맞는 직업이 뭐야?", "진로 추천해줘"]
+        if "학습" in summary:
+            return ["내 학습 스타일은?", "어떻게 공부하는 게 좋아?", "학습 방법 추천해줘"]
+        if "역량" in summary or "능력" in summary:
+            return ["내 강점은 뭐야?", "내가 잘하는 능력은?", "역량 분석 결과 알려줘"]
+        
+        return [summary]  # 매칭되는 규칙이 없으면 그냥 원본 요약문을 사용
 
     def _get_skill_level(self, percentile: float) -> str:
         """Determine skill level based on percentile"""
@@ -513,8 +575,21 @@ class DocumentTransformer:
             try:
                 logger.info(f"Processing {chunk_name} documents...")
                 documents = chunk_function(query_results)
+                
+                # ▼▼▼ [핵심 추가] 생성된 모든 문서에 대해 가상 질문을 생성하고 메타데이터에 추가 ▼▼▼
+                for doc in documents:
+                    hypothetical_questions = self._generate_hypothetical_questions(
+                        doc.summary_text, doc.doc_type, doc.content
+                    )
+                    doc.metadata['hypothetical_questions'] = hypothetical_questions
+                    
+                    # 검색에 사용될 텍스트는 이제 "요약문 + 가상질문들" 이 됩니다.
+                    searchable_text = doc.summary_text + "\n" + "\n".join(hypothetical_questions)
+                    doc.metadata['searchable_text'] = searchable_text
+                # ▲▲▲ [핵심 추가 끝] ▲▲▲
+                
                 all_documents.extend(documents)
-                logger.info(f"Created {len(documents)} {chunk_name} documents")
+                logger.info(f"Created {len(documents)} {chunk_name} documents with hypothetical questions")
             except Exception as e:
                 logger.error(f"Error processing {chunk_name}: {e}", exc_info=True)
                 continue

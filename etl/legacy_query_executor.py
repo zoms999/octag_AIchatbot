@@ -802,7 +802,7 @@ class LegacyQueryExecutor:
     Provides error handling, retry logic, and result validation
     """
     
-    def __init__(self, max_retries: int = 3, retry_delay: float = 1.0, max_workers: int = 4, query_timeout: float = 120.0):
+    def __init__(self, max_retries: int = 2, retry_delay: float = 1.0, max_workers: int = 3, query_timeout: float = 30.0):
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -1466,12 +1466,32 @@ class LegacyQueryExecutor:
         
         logger.info(f"Starting execution of {len(query_names)} queries for anp_seq: {anp_seq}")
         
+        # 병렬 실행 수를 제한하여 데이터베이스 과부하 방지
+        semaphore = asyncio.Semaphore(5)  # 최대 5개 쿼리만 동시 실행
+        
+        async def execute_with_semaphore(query_name):
+            async with semaphore:
+                return await self._execute_single_query_with_retry(session, anp_seq, query_name)
+        
         tasks = [
-            self._execute_single_query_with_retry(session, anp_seq, query_name)
+            execute_with_semaphore(query_name)
             for query_name in query_names
         ]
         
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # 전체 쿼리 실행에 타임아웃 설정 (5분)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=300  # 5분 타임아웃
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Query execution timed out after 300 seconds for anp_seq: {anp_seq}")
+            # 타임아웃 시 부분 결과라도 반환
+            results = [QueryResult(
+                query_name=name,
+                success=False,
+                error="Query execution timed out"
+            ) for name in query_names]
         
         query_results = {}
         successful_queries = 0

@@ -421,17 +421,19 @@ class VectorEmbedder:
         if not documents:
             return []
         
-        # Extract summary texts
-        summary_texts = []
+        # Extract texts to embed (prioritize text_to_embed over summary_text)
+        texts_to_embed = []
         for doc in documents:
-            summary_text = doc.get('summary_text', '')
-            if not summary_text:
-                logger.warning(f"Document missing summary_text: {doc.get('doc_type', 'unknown')}")
-                summary_text = str(doc.get('content', ''))[:500]  # Fallback to content preview
-            summary_texts.append(summary_text)
+            # ▼▼▼ [핵심 수정] text_to_embed 키를 우선적으로 사용 ▼▼▼
+            text_to_embed = doc.get('text_to_embed', doc.get('summary_text', ''))
+            if not text_to_embed:
+                logger.warning(f"Document missing text_to_embed and summary_text: {doc.get('doc_type', 'unknown')}")
+                text_to_embed = str(doc.get('content', ''))[:500]  # Fallback to content preview
+            texts_to_embed.append(text_to_embed)
+            # ▲▲▲ [핵심 수정 끝] ▲▲▲
         
         # Generate embeddings
-        embedding_results = await self.generate_embeddings_batch(summary_texts)
+        embedding_results = await self.generate_embeddings_batch(texts_to_embed)
         
         # Add embeddings to documents
         enhanced_documents = []

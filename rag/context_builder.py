@@ -331,6 +331,20 @@ class ContextBuilder:
         # Perform vector similarity search with graceful degradation
         try:
             search_results = await self.vector_search.similarity_search(search_query)
+            
+            # If no results found, try with lower threshold
+            if not search_results:
+                self.logger.warning(f"No results found with threshold 0.5, retrying with 0.3")
+                search_query.similarity_threshold = 0.3
+                search_results = await self.vector_search.similarity_search(search_query)
+                
+            # If still no results, try without doc type filter
+            if not search_results and processed_question.requires_specific_docs:
+                self.logger.warning(f"No results found with doc type filter, retrying without filter")
+                search_query.doc_type_filter = None
+                search_query.similarity_threshold = 0.3
+                search_results = await self.vector_search.similarity_search(search_query)
+                
         except VectorSearchError as e:
             self.logger.error(f"Vector search failed: {e}. Falling back to empty context.")
             return []
@@ -549,7 +563,7 @@ class ContextBuilder:
             Formatted document string
         """
         if not retrieved_docs:
-            return "관련 검사 결과를 찾을 수 없습니다."
+            return "관련 검사 결과를 찾을 수 없습니다. 적성검사를 완료하셨는지 확인해 주세요."
         
         formatted_parts = []
         
