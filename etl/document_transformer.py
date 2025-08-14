@@ -1,10 +1,10 @@
 """
 Document Transformation Engine
-Converts query results into thematic documents for RAG system
+Converts query results into thematic documents optimized for RAG system with semantic chunking
 """
 
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -28,22 +28,16 @@ class TransformedDocument:
     content: Dict[str, Any]
     summary_text: str
     metadata: Dict[str, Any]
+    embedding_vector: Optional[List[float]] = None  # 임베딩 단계에서 추가됨
 
 class DocumentTransformer:
     """
-    Transforms raw query results into semantic documents optimized for RAG
+    Transforms raw query results into semantic documents optimized for RAG with chunking strategy
     """
     
     def __init__(self):
-        self.transformation_methods = {
-            DocumentType.USER_PROFILE: self._create_user_profile_document, # <-- [6단계] 추가
-            DocumentType.PERSONALITY_PROFILE: self._create_personality_profile,
-            DocumentType.THINKING_SKILLS: self._create_thinking_skills_document,
-            DocumentType.CAREER_RECOMMENDATIONS: self._create_career_recommendations_document,
-            DocumentType.LEARNING_STYLE: self._create_learning_style_document,
-            DocumentType.COMPETENCY_ANALYSIS: self._create_competency_analysis_document,
-            DocumentType.PREFERENCE_ANALYSIS: self._create_preference_analysis_document
-        }
+        # Remove the old transformation_methods approach for better chunking flexibility
+        pass
     
     def _safe_get(self, data: List[Dict[str, Any]], index: int = 0, default: Dict[str, Any] = None) -> Dict[str, Any]:
         if default is None:
@@ -62,356 +56,476 @@ class DocumentTransformer:
         elif percentile >= 50: return "보통 (상위 50%)"
         elif percentile >= 25: return "개선 필요"
         else: return "많은 개선 필요"
+
+    # ==================== CHUNKING METHODS ====================
+    # These methods create focused, topic-specific documents for better RAG performance
     
-    # ▼▼▼ [6단계: 추가된 문서 생성 메소드] ▼▼▼
-    def _create_user_profile_document(self, query_results: Dict[str, List[Dict[str, Any]]]) -> TransformedDocument:
-        try:
-            personal_info = self._safe_get(query_results.get("personalInfoQuery", []))
-            if not personal_info or 'user_name' not in personal_info:
-                raise DocumentTransformationError(DocumentType.USER_PROFILE, "personalInfoQuery returned no data.")
+    def _chunk_user_profile(self, query_results: Dict[str, List[Dict[str, Any]]]) -> List[TransformedDocument]:
+        """Create focused user profile documents"""
+        documents = []
+        personal_info = self._safe_get(query_results.get("personalInfoQuery", []))
+        institute_settings = self._safe_get(query_results.get("instituteSettingsQuery", []))
+        
+        if not personal_info or 'user_name' not in personal_info:
+            return documents
 
+        user_name = self._safe_get_value(personal_info, "user_name", "사용자")
+
+        # 1. Basic Profile Document
+        basic_content = {
+            "user_name": user_name,
+            "age": self._safe_get_value(personal_info, "age"),
+            "gender": self._safe_get_value(personal_info, "gender"),
+            "birth_date": self._safe_get_value(personal_info, "birth_date")
+        }
+        
+        summary = f"{user_name}님의 기본 정보: {basic_content['age']}세, {basic_content['gender']}"
+        documents.append(TransformedDocument(
+            doc_type="USER_PROFILE",
+            content=basic_content,
+            summary_text=summary,
+            metadata={"data_sources": ["personalInfoQuery"], "created_at": datetime.now().isoformat(), "sub_type": "basic_info"}
+        ))
+
+        # 2. Education Document
+        education_info = {
+            "education_level": self._safe_get_value(personal_info, "education_level"),
+            "school_name": self._safe_get_value(personal_info, "school_name"),
+            "school_year": self._safe_get_value(personal_info, "school_year"),
+            "major": self._safe_get_value(personal_info, "major")
+        }
+        
+        if education_info.get("school_name") or education_info.get("education_level"):
+            edu_summary = f"{user_name}님의 학력: {education_info['education_level']}"
+            if education_info.get("school_name"):
+                edu_summary += f", {education_info['school_name']}"
+            if education_info.get("major"):
+                edu_summary += f"에서 {education_info['major']} 전공"
+                
+            documents.append(TransformedDocument(
+                doc_type="USER_PROFILE",
+                content=education_info,
+                summary_text=edu_summary,
+                metadata={"data_sources": ["personalInfoQuery"], "created_at": datetime.now().isoformat(), "sub_type": "education"}
+            ))
+
+        # 3. Career Document
+        career_info = {
+            "job_status": self._safe_get_value(personal_info, "job_status"),
+            "company_name": self._safe_get_value(personal_info, "company_name"),
+            "job_title": self._safe_get_value(personal_info, "job_title")
+        }
+        
+        if career_info.get("job_status") or career_info.get("company_name"):
+            career_summary = f"{user_name}님의 직업 정보: {career_info['job_status']}"
+            if career_info.get("company_name"):
+                career_summary += f", {career_info['company_name']}"
+            if career_info.get("job_title"):
+                career_summary += f"에서 {career_info['job_title']} 담당"
+                
+            documents.append(TransformedDocument(
+                doc_type="USER_PROFILE",
+                content=career_info,
+                summary_text=career_summary,
+                metadata={"data_sources": ["personalInfoQuery"], "created_at": datetime.now().isoformat(), "sub_type": "career"}
+            ))
+
+        return documents
+
+    def _chunk_personality_analysis(self, query_results: Dict[str, List[Dict[str, Any]]]) -> List[TransformedDocument]:
+        """Create detailed personality analysis documents"""
+        documents = []
+        
+        # Main tendency summary
+        tendency_data = self._safe_get(query_results.get("tendencyQuery", []))
+        top_tendencies = query_results.get("topTendencyQuery", [])
+        tendency_stats = query_results.get("tendencyStatsQuery", [])
+        
+        if tendency_data:
+            primary = self._safe_get_value(tendency_data, "Tnd1")
+            secondary = self._safe_get_value(tendency_data, "Tnd2")
+            tertiary = self._safe_get_value(tendency_data, "Tnd3")
+            
+            # Find stats for each tendency
+            primary_stats = next((s for s in tendency_stats if primary and s.get('tendency_name', '').startswith(primary)), {})
+            secondary_stats = next((s for s in tendency_stats if secondary and s.get('tendency_name', '').startswith(secondary)), {})
+            tertiary_stats = next((s for s in tendency_stats if tertiary and s.get('tendency_name', '').startswith(tertiary)), {})
+            
             content = {
-                "user_name": self._safe_get_value(personal_info, "user_name"),
-                "age": self._safe_get_value(personal_info, "age"),
-                "gender": self._safe_get_value(personal_info, "gender")
+                "primary_tendency": {"name": primary, "percentage": self._safe_get_value(primary_stats, "percentage", 0)},
+                "secondary_tendency": {"name": secondary, "percentage": self._safe_get_value(secondary_stats, "percentage", 0)},
+                "tertiary_tendency": {"name": tertiary, "percentage": self._safe_get_value(tertiary_stats, "percentage", 0)}
             }
             
-            summary_text = (
-                f"검사자는 {content['user_name']}님이며, 나이는 {content['age']}세, 성별은 {content['gender']}입니다."
-            )
+            summary = f"주요 성향 분석: 1순위 {primary}({content['primary_tendency']['percentage']}%), 2순위 {secondary}({content['secondary_tendency']['percentage']}%)"
+            if tertiary:
+                summary += f", 3순위 {tertiary}({content['tertiary_tendency']['percentage']}%)"
+                
+            documents.append(TransformedDocument(
+                doc_type="PERSONALITY_PROFILE",
+                content=content,
+                summary_text=summary,
+                metadata={"data_sources": ["tendencyQuery", "tendencyStatsQuery"], "created_at": datetime.now().isoformat(), "sub_type": "main_tendencies"}
+            ))
+
+        # Individual tendency explanations
+        tendency1_explain = self._safe_get(query_results.get("tendency1ExplainQuery", []))
+        if tendency1_explain and tendency1_explain.get("explanation"):
+            primary_name = self._safe_get_value(tendency_data, "Tnd1", "1순위 성향")
+            documents.append(TransformedDocument(
+                doc_type="PERSONALITY_PROFILE",
+                content=tendency1_explain,
+                summary_text=f"{primary_name} 성향에 대한 상세 설명: {tendency1_explain['explanation'][:100]}...",
+                metadata={"data_sources": ["tendency1ExplainQuery"], "created_at": datetime.now().isoformat(), "sub_type": "tendency_1_explanation"}
+            ))
+
+        tendency2_explain = self._safe_get(query_results.get("tendency2ExplainQuery", []))
+        if tendency2_explain and tendency2_explain.get("explanation"):
+            secondary_name = self._safe_get_value(tendency_data, "Tnd2", "2순위 성향")
+            documents.append(TransformedDocument(
+                doc_type="PERSONALITY_PROFILE",
+                content=tendency2_explain,
+                summary_text=f"{secondary_name} 성향에 대한 상세 설명: {tendency2_explain['explanation'][:100]}...",
+                metadata={"data_sources": ["tendency2ExplainQuery"], "created_at": datetime.now().isoformat(), "sub_type": "tendency_2_explanation"}
+            ))
+
+        # Top tendencies with detailed explanations
+        top_tendency_explains = query_results.get("topTendencyExplainQuery", [])
+        for i, explain_data in enumerate(top_tendency_explains[:5]):  # Top 5 only
+            if explain_data.get("explanation"):
+                documents.append(TransformedDocument(
+                    doc_type="PERSONALITY_PROFILE",
+                    content=explain_data,
+                    summary_text=f"{explain_data.get('tendency_name', f'{i+1}순위 성향')} 상세 분석: {explain_data['explanation'][:100]}...",
+                    metadata={"data_sources": ["topTendencyExplainQuery"], "created_at": datetime.now().isoformat(), "sub_type": f"top_tendency_detail_{i+1}"}
+                ))
+
+        # Strengths and weaknesses
+        strengths_weaknesses = query_results.get("strengthsWeaknessesQuery", [])
+        if strengths_weaknesses:
+            strengths = [sw for sw in strengths_weaknesses if sw.get('type') == 'strength']
+            weaknesses = [sw for sw in strengths_weaknesses if sw.get('type') == 'weakness']
             
-            metadata = {
-                "document_version": "1.5", "created_at": datetime.now().isoformat(),
-                "data_sources": ["personalInfoQuery"],
-            }
+            if strengths:
+                strength_summary = f"주요 강점: {', '.join([s['description'][:50] for s in strengths[:3]])}"
+                documents.append(TransformedDocument(
+                    doc_type="PERSONALITY_PROFILE",
+                    content={"strengths": strengths},
+                    summary_text=strength_summary,
+                    metadata={"data_sources": ["strengthsWeaknessesQuery"], "created_at": datetime.now().isoformat(), "sub_type": "strengths"}
+                ))
             
-            return TransformedDocument(
-                doc_type=DocumentType.USER_PROFILE,
-                content=content, summary_text=summary_text, metadata=metadata
-            )
-        except Exception as e:
-            logger.error(f"Error creating user profile document: {e}", exc_info=True)
-            raise DocumentTransformationError(DocumentType.USER_PROFILE, str(e))
+            if weaknesses:
+                weakness_summary = f"개선 영역: {', '.join([w['description'][:50] for w in weaknesses[:3]])}"
+                documents.append(TransformedDocument(
+                    doc_type="PERSONALITY_PROFILE",
+                    content={"weaknesses": weaknesses},
+                    summary_text=weakness_summary,
+                    metadata={"data_sources": ["strengthsWeaknessesQuery"], "created_at": datetime.now().isoformat(), "sub_type": "weaknesses"}
+                ))
 
-    def _create_personality_profile(self, query_results: Dict[str, List[Dict[str, Any]]]) -> TransformedDocument:
-        try:
-            tendency_data = self._safe_get(query_results.get("tendencyQuery", []))
-            top_tendencies = query_results.get("topTendencyQuery", [])
-            bottom_tendencies = query_results.get("bottomTendencyQuery", [])
-            tendency_stats = query_results.get("tendencyStatsQuery", [])
-            personality_detail = query_results.get("personalityDetailQuery", [])
-            strengths_weaknesses = query_results.get("strengthsWeaknessesQuery", [])
+        return documents
+
+    def _chunk_thinking_skills(self, query_results: Dict[str, List[Dict[str, Any]]]) -> List[TransformedDocument]:
+        """Create focused thinking skills documents"""
+        documents = []
+        
+        # Main thinking skills summary
+        thinking_main = self._safe_get(query_results.get("thinkingMainQuery", []))
+        if thinking_main:
+            summary = f"주요 사고력: {thinking_main.get('main_thinking_skill')}, 부 사고력: {thinking_main.get('sub_thinking_skill')}, 총점: {thinking_main.get('total_score')}"
+            documents.append(TransformedDocument(
+                doc_type="THINKING_SKILLS",
+                content=thinking_main,
+                summary_text=summary,
+                metadata={"data_sources": ["thinkingMainQuery"], "created_at": datetime.now().isoformat(), "sub_type": "summary"}
+            ))
+
+        # Detailed thinking skills comparison
+        comparison_data = query_results.get("thinkingSkillComparisonQuery", [])
+        if comparison_data:
+            # Create individual documents for top skills
+            sorted_skills = sorted(comparison_data, key=lambda x: x.get('my_score', 0), reverse=True)
             
-            primary_name = self._safe_get_value(tendency_data, "Tnd1")
-            secondary_name = self._safe_get_value(tendency_data, "Tnd2")
+            for i, skill in enumerate(sorted_skills[:5]):  # Top 5 skills
+                skill_name = skill.get('skill_name')
+                my_score = skill.get('my_score', 0)
+                avg_score = skill.get('average_score', 0)
+                
+                summary = f"{skill_name} 사고력: 내 점수 {my_score}점, 평균 {avg_score}점"
+                if my_score > avg_score:
+                    summary += f" (평균보다 {my_score - avg_score}점 높음)"
+                
+                documents.append(TransformedDocument(
+                    doc_type="THINKING_SKILLS",
+                    content=skill,
+                    summary_text=summary,
+                    metadata={"data_sources": ["thinkingSkillComparisonQuery"], "created_at": datetime.now().isoformat(), "sub_type": f"skill_{i+1}", "skill_name": skill_name}
+                ))
 
-            primary_stats = self._safe_get([s for s in tendency_stats if s.get('tendency_name', '').startswith(primary_name)])
-            secondary_stats = self._safe_get([s for s in tendency_stats if s.get('tendency_name', '').startswith(secondary_name)])
-            
-            content = {
-                "primary_tendency": {
-                    "name": primary_name,
-                    "percentage": self._safe_get_value(primary_stats, "percentage", 0.0)
-                },
-                "secondary_tendency": {
-                    "name": secondary_name,
-                    "percentage": self._safe_get_value(secondary_stats, "percentage", 0.0)
-                },
-                "top_tendencies": top_tendencies,
-                "bottom_tendencies": bottom_tendencies,
-                "personality_details": personality_detail,
-                "strengths_weaknesses": strengths_weaknesses
-            }
-            
-            summary_text = (
-                f"사용자의 주요 성향은 '{primary_name}'이며, 이는 전체 응답자의 {content['primary_tendency']['percentage']}%에 해당하는 유형입니다. "
-                f"부성향은 '{secondary_name}'(으)로, 전체의 {content['secondary_tendency']['percentage']}%가 이 유형에 속합니다. "
-                f"강점 성향은 {', '.join([t['tendency_name'] for t in top_tendencies])} 등입니다."
-            )
-            
-            metadata = {
-                "document_version": "1.4", "created_at": datetime.now().isoformat(),
-                "data_sources": ["tendencyQuery", "topTendencyQuery", "bottomTendencyQuery", "tendencyStatsQuery", "personalityDetailQuery", "strengthsWeaknessesQuery"],
-                "primary_tendency_name": primary_name,
-            }
-            
-            return TransformedDocument(
-                doc_type=DocumentType.PERSONALITY_PROFILE,
-                content=content, summary_text=summary_text, metadata=metadata
-            )
-        except Exception as e:
-            logger.error(f"Error creating personality profile document: {e}", exc_info=True)
-            raise DocumentTransformationError(DocumentType.PERSONALITY_PROFILE, str(e))
-    
-    def _create_thinking_skills_document(self, query_results: Dict[str, List[Dict[str, Any]]]) -> TransformedDocument:
-        try:
-            comparison_data = query_results.get("thinkingSkillComparisonQuery", [])
-            if not comparison_data:
-                raise DocumentTransformationError(DocumentType.THINKING_SKILLS, "thinkingSkillComparisonQuery returned no data.")
+        # Detailed thinking explanations
+        thinking_details = query_results.get("thinkingDetailQuery", [])
+        for detail in thinking_details:
+            if detail.get("explanation"):
+                skill_name = detail.get('skill_name')
+                documents.append(TransformedDocument(
+                    doc_type="THINKING_SKILLS",
+                    content=detail,
+                    summary_text=f"{skill_name} 상세 분석: {detail['explanation'][:100]}...",
+                    metadata={"data_sources": ["thinkingDetailQuery"], "created_at": datetime.now().isoformat(), "sub_type": "detail", "skill_name": skill_name}
+                ))
 
-            skills_with_avg = {item['skill_name']: item for item in comparison_data}
-            
-            thinking_skills_raw = query_results.get("thinkingSkillsQuery", [])
-            for skill_raw in thinking_skills_raw:
-                skill_name = skill_raw.get('skill_name')
-                if skill_name in skills_with_avg:
-                    skills_with_avg[skill_name]['percentile'] = skill_raw.get('percentile', 0)
+        return documents
 
-            final_skills = sorted(list(skills_with_avg.values()), key=lambda x: x.get('my_score', 0), reverse=True)
+    def _chunk_career_recommendations(self, query_results: Dict[str, List[Dict[str, Any]]]) -> List[TransformedDocument]:
+        """Create separate documents for different types of career recommendations"""
+        documents = []
 
-            content = {
-                "core_thinking_skills": final_skills,
-                "top_skills": final_skills[:3],
-                "bottom_skills": final_skills[-3:],
-            }
+        # Tendency-based job recommendations
+        tendency_jobs = query_results.get("careerRecommendationQuery", [])
+        if tendency_jobs:
+            job_names = [job['job_name'] for job in tendency_jobs[:5]]
+            summary = f"성향 기반 추천 직업: {', '.join(job_names)}"
+            documents.append(TransformedDocument(
+                doc_type="CAREER_RECOMMENDATIONS",
+                content={"jobs": tendency_jobs, "recommendation_type": "tendency"},
+                summary_text=summary,
+                metadata={"data_sources": ["careerRecommendationQuery"], "created_at": datetime.now().isoformat(), "sub_type": "tendency_based"}
+            ))
 
-            top_skill = content['top_skills'][0]
-            summary_text = (
-                f"사용자의 사고력 분석 결과, '{top_skill['skill_name']}'에서 가장 뛰어난 역량을 보입니다. "
-                f"점수는 {top_skill['my_score']}점으로, 전체 평균({top_skill['average_score']}점)보다 월등히 높습니다. "
-                f"전체적으로 {', '.join([s['skill_name'] for s in content['top_skills']])} 영역에서 강점을 보입니다."
-            )
+        # Competency-based job recommendations
+        competency_jobs = query_results.get("competencyJobsQuery", [])
+        if competency_jobs:
+            job_names = [job['jo_name'] for job in competency_jobs[:5]]
+            summary = f"역량 기반 추천 직업: {', '.join(job_names)}"
+            documents.append(TransformedDocument(
+                doc_type="CAREER_RECOMMENDATIONS",
+                content={"jobs": competency_jobs, "recommendation_type": "competency"},
+                summary_text=summary,
+                metadata={"data_sources": ["competencyJobsQuery"], "created_at": datetime.now().isoformat(), "sub_type": "competency_based"}
+            ))
 
-            metadata = {
-                "document_version": "1.4", "created_at": datetime.now().isoformat(),
-                "data_sources": ["thinkingSkillComparisonQuery", "thinkingSkillsQuery"],
-                "skills_analyzed": len(final_skills),
-                "strongest_skill": top_skill['skill_name']
-            }
-
-            return TransformedDocument(
-                doc_type=DocumentType.THINKING_SKILLS,
-                content=content, summary_text=summary_text, metadata=metadata
-            )
-        except Exception as e:
-            logger.error(f"Error creating thinking skills document: {e}", exc_info=True)
-            raise DocumentTransformationError(DocumentType.THINKING_SKILLS, str(e))
-
-    def _create_career_recommendations_document(self, query_results: Dict[str, List[Dict[str, Any]]]) -> TransformedDocument:
-        try:
-            tendency_jobs = query_results.get("careerRecommendationQuery", [])
-            competency_jobs = query_results.get("competencyJobsQuery", [])
-            preference_jobs = query_results.get("preferenceJobsQuery", [])
-            duties = query_results.get("dutiesQuery", [])
-            
-            if not any([tendency_jobs, competency_jobs, preference_jobs, duties]):
-                 raise DocumentTransformationError(DocumentType.CAREER_RECOMMENDATIONS, "No career recommendation data found.")
-
-            # 선호도 기반 직업 추천을 유형별(rimg1, rimg2, rimg3)로 그룹화
-            pref_jobs_by_type = defaultdict(list)
+        # Preference-based job recommendations
+        preference_jobs = query_results.get("preferenceJobsQuery", [])
+        if preference_jobs:
+            # Group by preference type
+            pref_groups = defaultdict(list)
             for job in preference_jobs:
-                pref_jobs_by_type[job['preference_type']].append(job)
-
-            content = {
-                "tendency_based_jobs": tendency_jobs,
-                "competency_based_jobs": competency_jobs,
-                "preference_based_jobs": dict(pref_jobs_by_type),
-                "recommended_duties": duties,
-            }
+                pref_groups[job.get('preference_type', 'unknown')].append(job)
             
-            summary_parts = []
-            if tendency_jobs:
-                summary_parts.append(f"사용자의 성향에 기반하여 '{tendency_jobs[0]['job_name']}' 등 {len(tendency_jobs)}개의 직업이 추천됩니다.")
-            if competency_jobs:
-                 summary_parts.append(f"보유한 역량을 바탕으로는 '{competency_jobs[0]['jo_name']}' 등 {len(competency_jobs)}개의 직업이 적합합니다.")
-            if preference_jobs:
-                pref_name = preference_jobs[0]['preference_name']
-                summary_parts.append(f"'{pref_name}' 선호 유형에 따라 '{preference_jobs[0]['jo_name']}'을 포함한 직업들이 추천됩니다.")
-            if duties:
-                summary_parts.append(f"추천되는 세부 직무로는 '{duties[0]['du_name']}' 등이 있습니다.")
+            for pref_type, jobs in pref_groups.items():
+                job_names = [job['jo_name'] for job in jobs[:3]]
+                pref_name = jobs[0].get('preference_name', pref_type)
+                summary = f"{pref_name} 선호도 기반 추천 직업: {', '.join(job_names)}"
+                documents.append(TransformedDocument(
+                    doc_type="CAREER_RECOMMENDATIONS",
+                    content={"jobs": jobs, "preference_type": pref_type, "preference_name": pref_name},
+                    summary_text=summary,
+                    metadata={"data_sources": ["preferenceJobsQuery"], "created_at": datetime.now().isoformat(), "sub_type": f"preference_{pref_type}"}
+                ))
 
-            summary_text = " ".join(summary_parts) if summary_parts else "다양한 기준에 따른 직업 및 직무 정보가 분석되었습니다."
-            
-            metadata = {
-                "document_version": "1.3", "created_at": datetime.now().isoformat(),
-                "data_sources": ["careerRecommendationQuery", "competencyJobsQuery", "preferenceJobsQuery", "dutiesQuery"],
-                "tendency_jobs_count": len(tendency_jobs),
-                "competency_jobs_count": len(competency_jobs),
-                "preference_jobs_count": len(preference_jobs),
-                "duties_count": len(duties)
-            }
+        # Job majors recommendations
+        job_majors = query_results.get("suitableJobMajorsQuery", [])
+        if job_majors:
+            summary = f"추천 직업별 관련 전공: {', '.join([jm['jo_name'] for jm in job_majors[:3]])}"
+            documents.append(TransformedDocument(
+                doc_type="CAREER_RECOMMENDATIONS",
+                content={"job_majors": job_majors},
+                summary_text=summary,
+                metadata={"data_sources": ["suitableJobMajorsQuery"], "created_at": datetime.now().isoformat(), "sub_type": "related_majors"}
+            ))
 
-            return TransformedDocument(
-                doc_type=DocumentType.CAREER_RECOMMENDATIONS,
-                content=content, summary_text=summary_text, metadata=metadata
-            )
-        except Exception as e:
-            logger.error(f"Error creating career recommendations document: {e}", exc_info=True)
-            raise DocumentTransformationError(DocumentType.CAREER_RECOMMENDATIONS, str(e))
+        # Duties recommendations
+        duties = query_results.get("dutiesQuery", [])
+        if duties:
+            duty_names = [duty['du_name'] for duty in duties[:5]]
+            summary = f"추천 직무: {', '.join(duty_names)}"
+            documents.append(TransformedDocument(
+                doc_type="CAREER_RECOMMENDATIONS",
+                content={"duties": duties},
+                summary_text=summary,
+                metadata={"data_sources": ["dutiesQuery"], "created_at": datetime.now().isoformat(), "sub_type": "duties"}
+            ))
 
-    def _create_learning_style_document(self, query_results: Dict[str, List[Dict[str, Any]]]) -> TransformedDocument:
-        try:
-            learning_style_results = query_results.get("learningStyleQuery", [])
-            chart_results = query_results.get("learningStyleChartQuery", [])
-            subject_ranks = query_results.get("subjectRanksQuery", [])
+        return documents
 
-            if not learning_style_results:
-                raise DocumentTransformationError(DocumentType.LEARNING_STYLE, "learningStyleQuery returned no data.")
+    def _chunk_competency_analysis(self, query_results: Dict[str, List[Dict[str, Any]]]) -> List[TransformedDocument]:
+        """Create detailed competency analysis documents"""
+        documents = []
+        
+        competencies = query_results.get("competencyAnalysisQuery", [])
+        competency_subjects = query_results.get("competencySubjectsQuery", [])
+        talent_list = self._safe_get(query_results.get("talentListQuery", []))
 
-            style_info = self._safe_get(learning_style_results)
-            
-            style_chart_data = [d for d in chart_results if d.get("item_type") == 'S']
-            method_chart_data = [d for d in chart_results if d.get("item_type") == 'W']
+        # Overall competency summary
+        if talent_list and talent_list.get("talent_summary"):
+            documents.append(TransformedDocument(
+                doc_type="COMPETENCY_ANALYSIS",
+                content=talent_list,
+                summary_text=f"핵심 역량 요약: {talent_list['talent_summary']}",
+                metadata={"data_sources": ["talentListQuery"], "created_at": datetime.now().isoformat(), "sub_type": "summary"}
+            ))
 
-            content = {
-                "primary_tendency_style": {
-                    "name": self._safe_get_value(style_info, "tnd1_name", ""),
-                    "study_tendency_description": self._safe_get_value(style_info, "tnd1_study_tendency", ""),
-                    "study_way_description": self._safe_get_value(style_info, "tnd1_study_way", "")
-                },
-                "recommended_subjects": subject_ranks,
-                "style_chart_data": style_chart_data,
-                "method_chart_data": method_chart_data,
-            }
-            
-            summary_parts = [
-                f"주요 학습 성향은 '{content['primary_tendency_style']['name']}'입니다.",
-                f"추천 공부 방법은 {content['primary_tendency_style']['study_way_description']}"
-            ]
-            
-            # ▼▼▼ [수정] subject_ranks 데이터가 있을 때만 요약문에 추가하도록 변경 ▼▼▼
-            if subject_ranks and len(subject_ranks) > 1:
-                summary_parts.append(f"이러한 성향에 기반하여, '{subject_ranks[0]['subject_name']}' 및 '{subject_ranks[1]['subject_name']}' 과목에서 높은 성취도를 보일 가능성이 있습니다.")
-            elif subject_ranks:
-                 summary_parts.append(f"이러한 성향에 기반하여, '{subject_ranks[0]['subject_name']}' 과목에서 높은 성취도를 보일 가능성이 있습니다.")
+        # Individual competency details
+        subjects_by_competency = defaultdict(list)
+        for sub in competency_subjects:
+            subjects_by_competency[sub.get('competency_name', '')].append(sub)
 
-            summary_text = " ".join(summary_parts)
-
-            metadata = {
-                "document_version": "1.5", "created_at": datetime.now().isoformat(),
-                "data_sources": ["learningStyleQuery", "learningStyleChartQuery", "subjectRanksQuery"],
-                "primary_style_name": content['primary_tendency_style']['name']
-            }
-            
-            return TransformedDocument(
-                doc_type=DocumentType.LEARNING_STYLE,
-                content=content, summary_text=summary_text, metadata=metadata
-            )
-        except Exception as e:
-            logger.error(f"Error creating learning style document: {e}", exc_info=True)
-            raise DocumentTransformationError(DocumentType.LEARNING_STYLE, str(e))
-    def _create_competency_analysis_document(self, query_results: Dict[str, List[Dict[str, Any]]]) -> TransformedDocument:
-        try:
-            competencies = query_results.get("competencyAnalysisQuery", [])
-            subjects = query_results.get("competencySubjectsQuery", [])
-
-            if not competencies:
-                raise DocumentTransformationError(DocumentType.COMPETENCY_ANALYSIS, "competencyAnalysisQuery returned no data.")
-            
-            subjects_by_competency = defaultdict(list)
-            for sub in subjects:
-                subjects_by_competency[sub['competency_name']].append({
-                    "group": sub['subject_group'],
-                    "area": sub['subject_area'],
-                    "name": sub['subject_name'],
-                    "explain": sub['subject_explain']
-                })
-
-            top_competencies = []
-            for comp in competencies:
-                comp_name = comp['competency_name']
-                comp_data = {
-                    "name": comp_name,
-                    "score": comp['score'],
-                    "rank": comp['rank'],
-                    "percentile": comp['percentile'],
-                    "level": self._get_skill_level(comp.get('percentile', 0)),
-                    "description": comp['description'],
-                    "recommended_subjects": subjects_by_competency.get(comp_name, [])
+        for comp in competencies:
+            comp_name = comp.get('competency_name')
+            if comp_name:
+                related_subjects = subjects_by_competency.get(comp_name, [])
+                content = {
+                    "competency": comp,
+                    "related_subjects": related_subjects
                 }
-                top_competencies.append(comp_data)
-            
-            content = {
-                "top_competencies": top_competencies,
-                "competency_summary": {
-                    "strongest_competency": top_competencies[0]['name'] if top_competencies else "N/A",
-                    "average_percentile": round(sum(c.get('percentile', 0) for c in top_competencies) / len(top_competencies), 1) if top_competencies else 0,
-                }
-            }
-            
-            summary_parts = [
-                f"사용자의 상위 5개 핵심 역량 분석 결과, 가장 뛰어난 역량은 '{content['competency_summary']['strongest_competency']}'(으)로, 전체 응시자 중 상위 {top_competencies[0]['percentile']}% 수준입니다."
-            ]
-            if len(top_competencies) > 1:
-                summary_parts.append(f"그 외에도 {', '.join([c['name'] for c in top_competencies[1:3]])} 등의 역량이 뛰어납니다.")
-            if subjects and top_competencies[0]['name'] in subjects_by_competency and subjects_by_competency[top_competencies[0]['name']]:
-                summary_parts.append(f"'{top_competencies[0]['name']}' 역량 강화를 위해 '{subjects_by_competency[top_competencies[0]['name']][0]['name']}' 과목 학습이 추천됩니다.")
+                
+                summary = f"{comp_name} 역량: {comp.get('score')}점 (상위 {comp.get('percentile')}%)"
+                if related_subjects:
+                    subject_names = [s['subject_name'] for s in related_subjects[:3]]
+                    summary += f", 관련 과목: {', '.join(subject_names)}"
+                
+                documents.append(TransformedDocument(
+                    doc_type="COMPETENCY_ANALYSIS",
+                    content=content,
+                    summary_text=summary,
+                    metadata={"data_sources": ["competencyAnalysisQuery", "competencySubjectsQuery"], "created_at": datetime.now().isoformat(), "sub_type": f"competency_{comp.get('rank', 0)}", "competency_name": comp_name}
+                ))
 
-            summary_text = " ".join(summary_parts)
+        return documents
+
+    def _chunk_learning_style(self, query_results: Dict[str, List[Dict[str, Any]]]) -> List[TransformedDocument]:
+        """Create learning style documents"""
+        documents = []
+        
+        learning_style = self._safe_get(query_results.get("learningStyleQuery", []))
+        learning_chart = query_results.get("learningStyleChartQuery", [])
+        subject_ranks = query_results.get("subjectRanksQuery", [])
+
+        if learning_style:
+            # Main learning style document
+            summary = f"학습 스타일: {learning_style.get('tnd1_name')} 기반"
+            if learning_style.get('tnd1_study_tendency'):
+                summary += f", 학습 성향: {learning_style['tnd1_study_tendency'][:50]}..."
             
-            metadata = {
-                "document_version": "1.2", "created_at": datetime.now().isoformat(),
-                "data_sources": ["competencyAnalysisQuery", "competencySubjectsQuery"],
-                "competencies_analyzed": len(top_competencies),
-                "strongest_competency_name": content['competency_summary']['strongest_competency']
-            }
+            documents.append(TransformedDocument(
+                doc_type="LEARNING_STYLE",
+                content=learning_style,
+                summary_text=summary,
+                metadata={"data_sources": ["learningStyleQuery"], "created_at": datetime.now().isoformat(), "sub_type": "main"}
+            ))
+
+        # Subject recommendations
+        if subject_ranks:
+            top_subjects = subject_ranks[:5]
+            subject_names = [s['subject_name'] for s in top_subjects]
+            summary = f"추천 학습 과목: {', '.join(subject_names)}"
             
-            return TransformedDocument(
-                doc_type=DocumentType.COMPETENCY_ANALYSIS,
-                content=content, summary_text=summary_text, metadata=metadata
-            )
+            documents.append(TransformedDocument(
+                doc_type="LEARNING_STYLE",
+                content={"subjects": top_subjects},
+                summary_text=summary,
+                metadata={"data_sources": ["subjectRanksQuery"], "created_at": datetime.now().isoformat(), "sub_type": "recommended_subjects"}
+            ))
+
+        # Learning method chart data
+        if learning_chart:
+            style_data = [item for item in learning_chart if item.get('item_type') == 'S']
+            method_data = [item for item in learning_chart if item.get('item_type') == 'W']
             
-        except Exception as e:
-            logger.error(f"Error creating competency analysis document: {e}", exc_info=True)
-            raise DocumentTransformationError(DocumentType.COMPETENCY_ANALYSIS, str(e))
+            if style_data:
+                documents.append(TransformedDocument(
+                    doc_type="LEARNING_STYLE",
+                    content={"style_data": style_data},
+                    summary_text=f"학습 스타일 분석: {', '.join([s['item_name'] for s in style_data[:3]])}",
+                    metadata={"data_sources": ["learningStyleChartQuery"], "created_at": datetime.now().isoformat(), "sub_type": "style_chart"}
+                ))
+            
+            if method_data:
+                documents.append(TransformedDocument(
+                    doc_type="LEARNING_STYLE",
+                    content={"method_data": method_data},
+                    summary_text=f"학습 방법 분석: {', '.join([m['item_name'] for m in method_data[:3]])}",
+                    metadata={"data_sources": ["learningStyleChartQuery"], "created_at": datetime.now().isoformat(), "sub_type": "method_chart"}
+                ))
+
+        return documents
+
+    def _chunk_preference_analysis(self, query_results: Dict[str, List[Dict[str, Any]]]) -> List[TransformedDocument]:
+        """Create preference analysis documents"""
+        documents = []
+        
+        preference_stats = self._safe_get(query_results.get("imagePreferenceStatsQuery", []))
+        preference_data = query_results.get("preferenceDataQuery", [])
+
+        if preference_stats:
+            summary = f"이미지 선호도 검사 통계: 총 {preference_stats.get('total_image_count')}개 이미지 중 {preference_stats.get('response_count')}개 응답 ({preference_stats.get('response_rate')}%)"
+            documents.append(TransformedDocument(
+                doc_type="PREFERENCE_ANALYSIS",
+                content=preference_stats,
+                summary_text=summary,
+                metadata={"data_sources": ["imagePreferenceStatsQuery"], "created_at": datetime.now().isoformat(), "sub_type": "test_stats"}
+            ))
+
+        # Individual preference details
+        for i, pref in enumerate(preference_data):
+            pref_name = pref.get('preference_name')
+            if pref_name:
+                summary = f"{pref_name} 선호도: {i+1}순위, 응답률 {pref.get('response_rate')}%"
+                if pref.get('description'):
+                    summary += f", 설명: {pref['description'][:50]}..."
+                
+                documents.append(TransformedDocument(
+                    doc_type="PREFERENCE_ANALYSIS",
+                    content=pref,
+                    summary_text=summary,
+                    metadata={"data_sources": ["preferenceDataQuery"], "created_at": datetime.now().isoformat(), "sub_type": f"preference_{i+1}", "preference_name": pref_name}
+                ))
+
+        return documents
     
-    def _create_preference_analysis_document(self, query_results: Dict[str, List[Dict[str, Any]]]) -> TransformedDocument:
-        try:
-            stats = self._safe_get(query_results.get("imagePreferenceStatsQuery", []))
-            preferences = query_results.get("preferenceDataQuery", [])
-
-            # ▼▼▼ [6단계 수정] 데이터가 없는 경우 에러를 발생시켜 안전하게 건너뛰도록 합니다. ▼▼▼
-            if not preferences:
-                raise DocumentTransformationError(DocumentType.PREFERENCE_ANALYSIS, "preferenceDataQuery returned no data.")
-
-            content = {
-                "preference_test_stats": stats,
-                "top_preferences": preferences
-            }
-
-            top_pref_names = [p['preference_name'] for p in preferences]
-            summary_text = (
-                f"이미지 선호도 분석 결과, 사용자는 '{', '.join(top_pref_names)}' 유형에 가장 높은 선호도를 보입니다. "
-                f"가장 선호하는 유형인 '{top_pref_names[0]}'에 대한 설명: {preferences[0]['description']}"
-            )
-            
-            metadata = {
-                "document_version": "1.5", "created_at": datetime.now().isoformat(),
-                "data_sources": ["imagePreferenceStatsQuery", "preferenceDataQuery"],
-                "top_preference_name": top_pref_names[0]
-            }
-            
-            return TransformedDocument(
-                doc_type=DocumentType.PREFERENCE_ANALYSIS,
-                content=content, summary_text=summary_text, metadata=metadata
-            )
-            
-        except Exception as e:
-            logger.error(f"Error creating preference analysis document: {e}", exc_info=True)
-            raise DocumentTransformationError(DocumentType.PREFERENCE_ANALYSIS, str(e))
-    
+    # ==================== MAIN TRANSFORMATION METHOD ====================
     async def transform_all_documents(
         self, 
         query_results: Dict[str, List[Dict[str, Any]]]
     ) -> List[TransformedDocument]:
-        documents = []
+        """
+        Transform query results into semantically chunked documents optimized for RAG
         
-        for doc_type, transform_method in self.transformation_methods.items():
+        This method creates multiple focused documents instead of a few large ones,
+        making it easier for the RAG system to find relevant information.
+        """
+        all_documents = []
+        
+        # Define chunking functions and their names for logging
+        chunking_functions = [
+            ("User Profile", self._chunk_user_profile),
+            ("Personality Analysis", self._chunk_personality_analysis),
+            ("Thinking Skills", self._chunk_thinking_skills),
+            ("Career Recommendations", self._chunk_career_recommendations),
+            ("Competency Analysis", self._chunk_competency_analysis),
+            ("Learning Style", self._chunk_learning_style),
+            ("Preference Analysis", self._chunk_preference_analysis),
+        ]
+        
+        # Execute each chunking function
+        for chunk_name, chunk_function in chunking_functions:
             try:
-                # Use doc_type.name to get the string representation for logging
-                doc_type_name = doc_type.name if hasattr(doc_type, 'name') else str(doc_type)
-                logger.info(f"Attempting to transform document type: {doc_type_name}")
-                document = transform_method(query_results)
-                documents.append(document)
-                logger.info(f"Successfully transformed {doc_type_name} document")
-            except DocumentTransformationError as e:
-                doc_type_name = e.doc_type.name if hasattr(e.doc_type, 'name') else str(e.doc_type)
-                logger.warning(f"Could not transform {doc_type_name}: {e.error_message}")
-                continue
+                logger.info(f"Processing {chunk_name} documents...")
+                documents = chunk_function(query_results)
+                all_documents.extend(documents)
+                logger.info(f"Created {len(documents)} {chunk_name} documents")
             except Exception as e:
-                doc_type_name = doc_type.name if hasattr(doc_type, 'name') else str(doc_type)
-                logger.error(f"Unexpected error while transforming {doc_type_name}: {e}", exc_info=True)
+                logger.error(f"Error processing {chunk_name}: {e}", exc_info=True)
                 continue
         
-        logger.info(f"Document transformation completed. Created {len(documents)} documents.")
-        return documents
+        logger.info(f"Document transformation and chunking completed. Created {len(all_documents)} total documents.")
+        
+        # Log document type distribution for debugging
+        doc_type_counts = defaultdict(int)
+        for doc in all_documents:
+            doc_type_counts[doc.doc_type] += 1
+        
+        logger.info(f"Document distribution: {dict(doc_type_counts)}")
+        
+        return all_documents

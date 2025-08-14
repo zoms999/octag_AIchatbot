@@ -833,35 +833,39 @@ class ETLOrchestrator:
         context: ETLContext, 
         embedded_documents: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Store documents in database using upsert to avoid duplicates"""
+        """Store documents in database using chunked document strategy"""
+        
+        # Import here to avoid circular imports
+        from database.repositories import save_chunked_documents
+        from etl.document_transformer import TransformedDocument
         
         stored_documents = []
-        doc_repo = DocumentRepository(context.session)
         
         # Store rollback information
         context.rollback_data["documents_to_rollback"] = []
         
         try:
+            # Convert embedded documents to TransformedDocument objects
+            transformed_docs = []
             for doc_data in embedded_documents:
-                # Upsert by (user_id, doc_type)
-                payload = {
-                    'user_id': uuid.UUID(context.user_id),
-                    'doc_type': doc_data['doc_type'],
-                    'content': doc_data['content'],
-                    'summary_text': doc_data['summary_text'],
-                    'embedding_vector': doc_data['embedding_vector'],
-                    'doc_metadata': doc_data.get('metadata', {}),
-                }
-                await doc_repo.upsert(payload)
+                transformed_doc = TransformedDocument(
+                    doc_type=doc_data['doc_type'],
+                    content=doc_data['content'],
+                    summary_text=doc_data['summary_text'],
+                    metadata=doc_data.get('metadata', {}),
+                    embedding_vector=doc_data['embedding_vector']
+                )
+                transformed_docs.append(transformed_doc)
+                
                 stored_documents.append({
                     'doc_type': doc_data['doc_type'],
                     'user_id': context.user_id
                 })
             
-            # Commit transaction
-            await context.session.commit()
+            # Use save_chunked_documents function (delete + insert strategy)
+            await save_chunked_documents(context.session, context.user_id, transformed_docs)
             
-            logger.info(f"Successfully stored {len(stored_documents)} documents")
+            logger.info(f"Successfully stored {len(stored_documents)} documents using chunked strategy")
             return stored_documents
             
         except Exception as e:

@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -41,9 +42,10 @@ async def test_test_completion_handler():
             retry_delay=30
         )
         
-        # Create test request
+        # Create test request with valid UUID
+        test_user_id = str(uuid.uuid4())
         test_request = TestCompletionRequest(
-            user_id="test_user_123",
+            user_id=test_user_id,
             anp_seq=12345,
             test_type="standard",
             completed_at=datetime.now(),

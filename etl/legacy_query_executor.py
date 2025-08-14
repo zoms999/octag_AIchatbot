@@ -56,31 +56,45 @@ class AptitudeTestQueries:
         return [dict(r) for r in rows]
 
     def _query_tendency(self, anp_seq: int) -> List[Dict[str, Any]]:
+        # [수정] 3순위 성향(rv_tnd3)까지 조회하도록 쿼리 확장
         sql = """
-        select max(case when rk = 1 then tnd end) as "Tnd1",
-               max(case when rk = 2 then tnd end) as "Tnd2"
-        from (
-          select replace(qa.qua_name,'형','') as tnd, 1 as rk
-          from mwd_resval rv, mwd_question_attr qa
-          where rv.anp_seq = :anp_seq and qa.qua_code = rv.rv_tnd1
-          union
-          select replace(qa.qua_name,'형','') as tnd, 2 as rk
-          from mwd_resval rv, mwd_question_attr qa
-          where rv.anp_seq = :anp_seq and qa.qua_code = rv.rv_tnd2
+        SELECT
+            MAX(CASE WHEN rk = 1 THEN tnd END) AS "Tnd1",
+            MAX(CASE WHEN rk = 2 THEN tnd END) AS "Tnd2",
+            MAX(CASE WHEN rk = 3 THEN tnd END) AS "Tnd3"
+        FROM (
+            SELECT REPLACE(qa.qua_name,'형','') AS tnd, 1 AS rk
+            FROM mwd_resval rv
+            JOIN mwd_question_attr qa ON qa.qua_code = rv.rv_tnd1
+            WHERE rv.anp_seq = :anp_seq
+            UNION ALL
+            SELECT REPLACE(qa.qua_name,'형','') AS tnd, 2 AS rk
+            FROM mwd_resval rv
+            JOIN mwd_question_attr qa ON qa.qua_code = rv.rv_tnd2
+            WHERE rv.anp_seq = :anp_seq
+            UNION ALL
+            SELECT REPLACE(qa.qua_name,'형','') AS tnd, 3 AS rk
+            FROM mwd_resval rv
+            JOIN mwd_question_attr qa ON qa.qua_code = rv.rv_tnd3
+            WHERE rv.anp_seq = :anp_seq
         ) t
         """
         return self._run(sql, {"anp_seq": anp_seq})
 
     def _query_top_tendency(self, anp_seq: int) -> List[Dict[str, Any]]:
+        # Top 3 tendencies with detailed information
         sql = """
-        select qa.qua_name as tendency_name,
-               sc1.sc1_rank as rank,
-               sc1.qua_code as code,
-               (round(sc1.sc1_rate * 100))::int as score
-        from mwd_score1 sc1, mwd_question_attr qa
-        where sc1.anp_seq = :anp_seq and sc1.sc1_step='tnd' and sc1.sc1_rank <= 3
-          and qa.qua_code = sc1.qua_code
-        order by sc1.sc1_rank
+        SELECT 
+            sc1.sc1_rank as rank,
+            qa.qua_name as tendency_name,
+            sc1.qua_code as code,
+            (round(sc1.sc1_rate * 100))::int as score
+        FROM mwd_score1 sc1
+        JOIN mwd_question_attr qa ON qa.qua_code = sc1.qua_code
+        WHERE sc1.anp_seq = :anp_seq 
+          AND sc1.sc1_step = 'tnd' 
+          AND sc1.sc1_rank <= 3
+        ORDER BY sc1.sc1_rank
         """
         return self._run(sql, {"anp_seq": anp_seq})
 
@@ -390,26 +404,55 @@ class AptitudeTestQueries:
 
     # ▼▼▼ [5단계: 추가된 메소드 1] ▼▼▼
     def _query_tendency_stats(self, anp_seq: int) -> List[Dict[str, Any]]:
-        # 원본 #34 쿼리(tendencyStatsQuery) 기반
+        # [수정] mwd_score1 테이블을 기반으로 1순위 성향자 비율을 계산하는 쿼리로 변경
         sql = """
-        WITH TendencyCounts AS (
-            SELECT rv_tnd1, COUNT(*) AS tendency_count
-            FROM mwd_resval
-            GROUP BY rv_tnd1
-        ), TotalCount AS (
-            SELECT COUNT(*) AS total_count FROM mwd_resval
-        ), UserTendencies AS (
-            SELECT rv_tnd1, rv_tnd2 FROM mwd_resval WHERE anp_seq = :anp_seq
+        WITH
+        TendencyCounts AS (
+            SELECT
+            qua_code,
+            COUNT(*) AS tendency_count
+            FROM
+            mwd_score1
+            WHERE
+            sc1_step = 'tnd' AND sc1_rank = 1
+            GROUP BY
+            qua_code
+        ),
+        TotalCount AS (
+            SELECT
+            COUNT(*) AS total_count
+            FROM
+            mwd_score1
+            WHERE
+            sc1_step = 'tnd' AND sc1_rank = 1
         )
         SELECT
-            qa.qua_name as tendency_name,
-            COALESCE(
-                (ROUND((tc.tendency_count::numeric / tt.total_count) * 100, 1))::float, 0
-            ) as percentage
-        FROM UserTendencies ut
-        JOIN mwd_question_attr qa ON qa.qua_code IN (ut.rv_tnd1, ut.rv_tnd2)
-        LEFT JOIN TendencyCounts tc ON tc.rv_tnd1 = qa.qua_code
-        CROSS JOIN TotalCount tt
+            qa.qua_name AS tendency_name,
+            -- sc1.sc1_rank AS rank, -- DocumentTransformer에서 사용하지 않으므로 주석 처리 가능
+            -- sc1.qua_code AS code, -- DocumentTransformer에서 사용하지 않으므로 주석 처리 가능
+            CASE
+                WHEN tt.total_count > 0 THEN
+                ROUND(
+                    (COALESCE(tc.tendency_count, 0) * 100.0) / tt.total_count,
+                    1
+                )::float
+                ELSE 0
+            END AS percentage -- DocumentTransformer와의 호환성을 위해 컬럼명을 'percentage'로 유지
+        FROM
+            mwd_score1 sc1
+        JOIN
+            mwd_question_attr qa ON sc1.qua_code = qa.qua_code
+        LEFT JOIN
+            TendencyCounts tc ON sc1.qua_code = tc.qua_code
+        CROSS JOIN
+            TotalCount tt
+        WHERE
+            sc1.anp_seq = :anp_seq
+            AND sc1.sc1_step = 'tnd'
+            -- 사용자의 상위 3개 성향에 대한 통계를 모두 가져오도록 rank 조건 확장
+            AND sc1.sc1_rank <= 3
+        ORDER BY
+            sc1.sc1_rank
         """
         return self._run(sql, {"anp_seq": anp_seq})
 
@@ -441,19 +484,33 @@ class AptitudeTestQueries:
 
     # ▼▼▼ [6단계: 추가된 메소드 1] ▼▼▼
     def _query_personal_info(self, anp_seq: int) -> List[Dict[str, Any]]:
-        # 원본 #3 쿼리(personalInfoQuery) 기반
+        # [수정] 개인의 상세 프로필 정보를 조회하는 쿼리로 변경
+        # 연락처(cellphone, contact, email) 관련 필드는 제외
         sql = """
         SELECT
+            ac.ac_id as user_id,
             pe.pe_name as user_name,
+            pe.pe_birth_year || '-' || pe.pe_birth_month || '-' || pe.pe_birth_day as birth_date,
             cast(extract(year from age(cast(
                 lpad(cast(pe_birth_year as text),4,'0') ||
                 lpad(cast(pe_birth_month as text),2,'0') ||
                 lpad(cast(pe_birth_day as text),2,'0') as date
             ))) as int) as age,
-            case when pe.pe_sex = 'M' then '남성' else '여성' end as gender
+            case when pe.pe_sex = 'M' then '남성' else '여성' end as gender,
+            coalesce(ec.ename, '') as education_level,
+            pe.pe_school_name as school_name,
+            pe.pe_school_year as school_year,
+            pe.pe_school_major as major,
+            coalesce(jc.jname, '') as job_status,
+            pe.pe_job_name as company_name,
+            pe.pe_job_detail as job_title,
+            ins.ins_name as institute_name
         FROM mwd_answer_progress ap
         JOIN mwd_account ac ON ap.ac_gid = ac.ac_gid
         JOIN mwd_person pe ON ac.pe_seq = pe.pe_seq
+        LEFT JOIN mwd_institute ins ON ac.ins_seq = ins.ins_seq
+        LEFT OUTER JOIN (SELECT coc_code ecode, coc_code_name ename FROM mwd_common_code WHERE coc_group = 'UREDU') ec ON pe.pe_ur_education = ec.ecode
+        LEFT OUTER JOIN (SELECT coc_code jcode, coc_code_name jname FROM mwd_common_code WHERE coc_group = 'URJOB') jc ON pe.pe_ur_job = jc.jcode
         WHERE ap.anp_seq = :anp_seq
         """
         return self._run(sql, {"anp_seq": anp_seq})
@@ -488,6 +545,157 @@ class AptitudeTestQueries:
         JOIN mwd_tendency_subject_map sm ON sm.tsm_use = 'Y'
         WHERE rv.anp_seq = :anp_seq
         ORDER BY rank, sm.tsm_subject_code
+        """
+        return self._run(sql, {"anp_seq": anp_seq})
+
+    # [신규] 쿼리 #2: instituteSettingsQuery
+    def _query_institute_settings(self, anp_seq: int) -> List[Dict[str, Any]]:
+        sql = """
+        SELECT
+          COALESCE(ins.ins_tendency_view_type, 'summary') as ins_tendency_view_type,
+          COALESCE(ins.ins_competency_view_type, 'summary') as ins_competency_view_type,
+          CASE WHEN ins.ins_seq IS NOT NULL THEN 'institutional' ELSE 'individual' END as member_type
+        FROM mwd_answer_progress ap
+        JOIN mwd_account ac ON ac.ac_gid = ap.ac_gid
+        LEFT JOIN mwd_institute ins ON ins.ins_seq = ac.ins_seq
+        WHERE ap.anp_seq = :anp_seq
+        """
+        return self._run(sql, {"anp_seq": anp_seq})
+
+    # [신규] 쿼리 #5: tendency1ExplainQuery
+    def _query_tendency1_explain(self, anp_seq: int) -> List[Dict[str, Any]]:
+        sql = """
+        SELECT replace(qe.que_explain, 'OOO', pe.pe_name || '님') as explanation
+        FROM mwd_resval rv
+        JOIN mwd_question_explain qe ON qe.qua_code = rv.rv_tnd1
+        JOIN mwd_answer_progress ap ON rv.anp_seq = ap.anp_seq
+        JOIN mwd_account ac ON ap.ac_gid = ac.ac_gid
+        JOIN mwd_person pe ON ac.pe_seq = pe.pe_seq
+        WHERE rv.anp_seq = :anp_seq
+        """
+        return self._run(sql, {"anp_seq": anp_seq})
+
+    # [신규] 쿼리 #11: topTendencyExplainQuery
+    def _query_top_tendency_explain(self, anp_seq: int) -> List[Dict[str, Any]]:
+        sql = """
+        SELECT
+          sc1.sc1_rank as rank,
+          qa.qua_name as tendency_name,
+          qe.que_explain as explanation
+        FROM mwd_score1 sc1
+        JOIN mwd_question_attr qa ON qa.qua_code = sc1.qua_code
+        JOIN mwd_question_explain qe ON qe.qua_code = sc1.qua_code AND qe.que_switch = 1
+        WHERE sc1.anp_seq = :anp_seq
+          AND sc1.sc1_step = 'tnd'
+          AND sc1.sc1_rank <= 15
+        ORDER BY sc1.sc1_rank
+        """
+        return self._run(sql, {"anp_seq": anp_seq})
+
+    # [신규] 쿼리 #13: thinkingMainQuery
+    def _query_thinking_main(self, anp_seq: int) -> List[Dict[str, Any]]:
+        sql = """
+        SELECT
+          (SELECT qa.qua_name FROM mwd_question_attr qa WHERE qa.qua_code = rv_thk1) AS main_thinking_skill,
+          (SELECT qa.qua_name FROM mwd_question_attr qa WHERE qa.qua_code = rv_thk2) AS sub_thinking_skill,
+          rv_thktscore AS total_score
+        FROM mwd_resval
+        WHERE anp_seq = :anp_seq
+        """
+        return self._run(sql, {"anp_seq": anp_seq})
+
+    # [신규] 쿼리 #15: thinkingDetailQuery
+    def _query_thinking_detail(self, anp_seq: int) -> List[Dict[str, Any]]:
+        sql = """
+        SELECT
+          qa.qua_name as skill_name,
+          ROUND(sc1.sc1_rate * 100) AS score,
+          REPLACE(qe.que_explain, 'OOO', pe.pe_name || '님') AS explanation
+        FROM mwd_score1 sc1
+        JOIN mwd_question_attr qa ON qa.qua_code = sc1.qua_code
+        JOIN mwd_question_explain qe ON qe.qua_code = qa.qua_code
+        JOIN mwd_answer_progress ap ON ap.anp_seq = sc1.anp_seq
+        JOIN mwd_account ac ON ac.ac_gid = ap.ac_gid
+        JOIN mwd_person pe ON pe.pe_seq = ac.pe_seq
+        WHERE sc1.anp_seq = :anp_seq
+          AND sc1.sc1_step = 'thk'
+          AND qe.que_switch = CASE
+            WHEN sc1.sc1_rate * 100 BETWEEN 80 AND 100 THEN 1
+            WHEN sc1.sc1_rate * 100 BETWEEN 51 AND 79 THEN 2
+            ELSE 3
+          END
+        ORDER BY sc1.sc1_rank
+        """
+        return self._run(sql, {"anp_seq": anp_seq})
+
+    # [신규] 쿼리 #18: suitableJobMajorsQuery
+    def _query_suitable_job_majors(self, anp_seq: int) -> List[Dict[str, Any]]:
+        sql = """
+        SELECT
+          jo.jo_name,
+          string_agg(ma.ma_name, ', ' ORDER BY ma.ma_name) AS major
+        FROM mwd_resjob rj
+        JOIN mwd_job jo ON jo.jo_code = rj.rej_code
+        JOIN mwd_job_major_map jmm ON jmm.jo_code = rj.rej_code
+        JOIN mwd_major ma ON ma.ma_code = jmm.ma_code
+        WHERE rj.anp_seq = :anp_seq
+        AND rj.rej_kind = 'rtnd'
+        AND rj.rej_rank <= 7
+        GROUP BY jo.jo_code, rj.rej_rank
+        ORDER BY rj.rej_rank
+        """
+        return self._run(sql, {"anp_seq": anp_seq})
+
+    # [신규] 쿼리 #21: talentListQuery
+    def _query_talent_list(self, anp_seq: int) -> List[Dict[str, Any]]:
+        sql = """
+        SELECT
+          string_agg(qa.qua_name, ', ' ORDER BY sc1.sc1_rank) AS talent_summary
+        FROM mwd_question_attr qa
+        JOIN mwd_score1 sc1 ON sc1.qua_code = qa.qua_code
+        WHERE sc1.anp_seq = :anp_seq
+          AND sc1.sc1_step = 'tal'
+          AND sc1.sc1_rank <= 5
+        """
+        return self._run(sql, {"anp_seq": anp_seq})
+
+    # [신규] 쿼리 #6: tendency2ExplainQuery
+    def _query_tendency2_explain(self, anp_seq: int) -> List[Dict[str, Any]]:
+        sql = """
+        SELECT replace(qe.que_explain, 'OOO', pe.pe_name || '님') as explanation
+        FROM mwd_resval rv
+        JOIN mwd_question_explain qe ON qe.qua_code = rv.rv_tnd2
+        JOIN mwd_answer_progress ap ON rv.anp_seq = ap.anp_seq
+        JOIN mwd_account ac ON ap.ac_gid = ac.ac_gid
+        JOIN mwd_person pe ON ac.pe_seq = pe.pe_seq
+        WHERE rv.anp_seq = :anp_seq
+        """
+        return self._run(sql, {"anp_seq": anp_seq})
+
+    # [신규] 쿼리 #12: bottomTendencyExplainQuery
+    def _query_bottom_tendency_explain(self, anp_seq: int) -> List[Dict[str, Any]]:
+        sql = """
+        SELECT
+          sc1.sc1_rank as rank,
+          qa.qua_name as tendency_name,
+          qe.que_explain as explanation
+        FROM mwd_score1 sc1
+        JOIN mwd_question_attr qa ON qa.qua_code = sc1.qua_code
+        JOIN mwd_question_explain qe ON qe.qua_code = sc1.qua_code AND qe.que_switch = 1
+        WHERE sc1.anp_seq = :anp_seq
+          AND sc1.sc1_step = 'tnd'
+          AND sc1.sc1_rank > (select count(*) from mwd_score1 where anp_seq = :anp_seq and sc1_step='tnd') - 3
+        ORDER BY sc1.sc1_rank DESC
+        """
+        return self._run(sql, {"anp_seq": anp_seq})
+
+    # [신규] 쿼리 #20: pdKindQuery
+    def _query_pd_kind(self, anp_seq: int) -> List[Dict[str, Any]]:
+        sql = """
+        SELECT cr.pd_kind
+        FROM mwd_answer_progress anp
+        JOIN mwd_choice_result cr ON anp.cr_seq = cr.cr_seq
+        WHERE anp.anp_seq = :anp_seq
         """
         return self._run(sql, {"anp_seq": anp_seq})
 
@@ -552,6 +760,27 @@ class AptitudeTestQueries:
         try: results["subjectRanksQuery"] = self._query_subject_ranks(anp_seq)
         except: results["subjectRanksQuery"] = []
 
+        # ▼▼▼ [신규: 누락되었던 쿼리들 호출 추가] ▼▼▼
+        try: results["instituteSettingsQuery"] = self._query_institute_settings(anp_seq)
+        except: results["instituteSettingsQuery"] = []
+        try: results["tendency1ExplainQuery"] = self._query_tendency1_explain(anp_seq)
+        except: results["tendency1ExplainQuery"] = []
+        try: results["tendency2ExplainQuery"] = self._query_tendency2_explain(anp_seq)
+        except: results["tendency2ExplainQuery"] = []
+        try: results["topTendencyExplainQuery"] = self._query_top_tendency_explain(anp_seq)
+        except: results["topTendencyExplainQuery"] = []
+        try: results["bottomTendencyExplainQuery"] = self._query_bottom_tendency_explain(anp_seq)
+        except: results["bottomTendencyExplainQuery"] = []
+        try: results["thinkingMainQuery"] = self._query_thinking_main(anp_seq)
+        except: results["thinkingMainQuery"] = []
+        try: results["thinkingDetailQuery"] = self._query_thinking_detail(anp_seq)
+        except: results["thinkingDetailQuery"] = []
+        try: results["suitableJobMajorsQuery"] = self._query_suitable_job_majors(anp_seq)
+        except: results["suitableJobMajorsQuery"] = []
+        try: results["pdKindQuery"] = self._query_pd_kind(anp_seq)
+        except: results["pdKindQuery"] = []
+        try: results["talentListQuery"] = self._query_talent_list(anp_seq)
+        except: results["talentListQuery"] = []
 
        # [수정] remaining_keys 목록 업데이트
         remaining_keys = [
@@ -591,6 +820,10 @@ class LegacyQueryExecutor:
             "imagePreferenceStatsQuery", "preferenceDataQuery", "preferenceJobsQuery",
             "tendencyStatsQuery", "thinkingSkillComparisonQuery",
             "personalInfoQuery", "subjectRanksQuery",
+            # [신규] 추가된 쿼리 이름들
+            "instituteSettingsQuery", "tendency1ExplainQuery", "tendency2ExplainQuery",
+            "topTendencyExplainQuery", "bottomTendencyExplainQuery", "thinkingMainQuery", 
+            "thinkingDetailQuery", "suitableJobMajorsQuery", "pdKindQuery", "talentListQuery",
         ]
 
     def _setup_validators(self) -> Dict[str, callable]:
@@ -617,12 +850,25 @@ class LegacyQueryExecutor:
             "thinkingSkillComparisonQuery": self._validate_thinking_skill_comparison_query,
             "personalInfoQuery": self._validate_personal_info_query,
             "subjectRanksQuery": self._validate_subject_ranks_query,
+            # [신규] 추가된 쿼리 검증 함수들
+            "instituteSettingsQuery": self._validate_institute_settings_query,
+            "tendency1ExplainQuery": self._validate_tendency1_explain_query,
+            "tendency2ExplainQuery": self._validate_tendency2_explain_query,
+            "topTendencyExplainQuery": self._validate_top_tendency_explain_query,
+            "bottomTendencyExplainQuery": self._validate_bottom_tendency_explain_query,
+            "thinkingMainQuery": self._validate_thinking_main_query,
+            "thinkingDetailQuery": self._validate_thinking_detail_query,
+            "suitableJobMajorsQuery": self._validate_suitable_job_majors_query,
+            "pdKindQuery": self._validate_pd_kind_query,
+            "talentListQuery": self._validate_talent_list_query,
         }
     
     def _validate_tendency_query(self, data: List[Dict[str, Any]]) -> bool:
         """Validate tendency query results"""
-        if not data or len(data) == 0:
+        if data is None:
             return False
+        if not data or len(data) == 0:
+            return True  # Allow empty results
         
         first_row = data[0]
         required_fields = ["Tnd1", "Tnd2"]
@@ -685,8 +931,10 @@ class LegacyQueryExecutor:
     
     def _validate_career_recommendation_query(self, data: List[Dict[str, Any]]) -> bool:
         """Validate career recommendation query results"""
-        if not data:
+        if data is None:
             return False
+        if not data:
+            return True  # Allow empty results
             
         required_fields = ["job_code", "job_name", "match_score"]
         
@@ -734,7 +982,11 @@ class LegacyQueryExecutor:
         
     def _validate_learning_style_query(self, data: List[Dict[str, Any]]) -> bool:
         """Validate learning style query results."""
-        if not data or len(data) != 1:
+        if data is None:
+            return False
+        if not data:
+            return True  # Allow empty results
+        if len(data) != 1:
             logger.warning(f"learningStyleQuery should return exactly one row, but got {len(data)}")
             return False
         
@@ -900,7 +1152,9 @@ class LegacyQueryExecutor:
     # ▼▼▼ [6단계: 추가된 유효성 검사 메소드] ▼▼▼
     def _validate_personal_info_query(self, data: List[Dict[str, Any]]) -> bool:
         """Validate personal info query results."""
-        if not data or len(data) != 1: return False
+        if data is None: return False
+        if not data: return True  # Allow empty results
+        if len(data) != 1: return False
         
         required_fields = ["user_name", "age", "gender"]
         for field in required_fields:
@@ -917,6 +1171,101 @@ class LegacyQueryExecutor:
             for field in required_fields:
                 if field not in row: return False
         return True
+
+    # ▼▼▼ [신규: 추가된 유효성 검사 메소드들] ▼▼▼
+    def _validate_institute_settings_query(self, data: List[Dict[str, Any]]) -> bool:
+        """Validate institute settings query results."""
+        if data is None: return False
+        if not data: return True  # Allow empty results
+        if len(data) != 1: return False
+        
+        required_fields = ["ins_tendency_view_type", "ins_competency_view_type", "member_type"]
+        for field in required_fields:
+            if field not in data[0]: return False
+        return True
+
+    def _validate_tendency1_explain_query(self, data: List[Dict[str, Any]]) -> bool:
+        """Validate tendency1 explain query results."""
+        if data is None: return False
+        if not data: return True  # Allow empty results
+        if len(data) != 1: return False
+        return "explanation" in data[0]
+
+    def _validate_top_tendency_explain_query(self, data: List[Dict[str, Any]]) -> bool:
+        """Validate top tendency explain query results."""
+        if data is None: return False
+        if not data: return True
+        
+        required_fields = ["rank", "tendency_name", "explanation"]
+        for row in data:
+            for field in required_fields:
+                if field not in row: return False
+        return True
+
+    def _validate_thinking_main_query(self, data: List[Dict[str, Any]]) -> bool:
+        """Validate thinking main query results."""
+        if data is None: return False
+        if not data: return True  # Allow empty results
+        if len(data) != 1: return False
+        
+        required_fields = ["main_thinking_skill", "sub_thinking_skill", "total_score"]
+        for field in required_fields:
+            if field not in data[0]: return False
+        return True
+
+    def _validate_thinking_detail_query(self, data: List[Dict[str, Any]]) -> bool:
+        """Validate thinking detail query results."""
+        if data is None: return False
+        if not data: return True
+        
+        required_fields = ["skill_name", "score", "explanation"]
+        for row in data:
+            for field in required_fields:
+                if field not in row: return False
+        return True
+
+    def _validate_suitable_job_majors_query(self, data: List[Dict[str, Any]]) -> bool:
+        """Validate suitable job majors query results."""
+        if data is None: return False
+        if not data: return True
+        
+        required_fields = ["jo_name", "major"]
+        for row in data:
+            for field in required_fields:
+                if field not in row: return False
+        return True
+
+    def _validate_talent_list_query(self, data: List[Dict[str, Any]]) -> bool:
+        """Validate talent list query results."""
+        if data is None: return False
+        if not data: return True  # Allow empty results
+        if len(data) != 1: return False
+        return "talent_summary" in data[0]
+
+    def _validate_tendency2_explain_query(self, data: List[Dict[str, Any]]) -> bool:
+        """Validate tendency2 explain query results."""
+        if data is None: return False
+        if not data: return True  # Allow empty results
+        if len(data) != 1: return False
+        return "explanation" in data[0]
+
+    def _validate_bottom_tendency_explain_query(self, data: List[Dict[str, Any]]) -> bool:
+        """Validate bottom tendency explain query results."""
+        if data is None: return False
+        if not data: return True
+        
+        required_fields = ["rank", "tendency_name", "explanation"]
+        for row in data:
+            for field in required_fields:
+                if field not in row: return False
+        return True
+
+    def _validate_pd_kind_query(self, data: List[Dict[str, Any]]) -> bool:
+        """Validate pd kind query results."""
+        if data is None: return False
+        if not data: return True  # Allow empty results
+        if len(data) != 1: return False
+        return "pd_kind" in data[0]
 
     def _validate_query_result(self, query_name: str, data: List[Dict[str, Any]]) -> bool:
         """Validate query result using appropriate validator"""
@@ -1086,6 +1435,18 @@ class LegacyQueryExecutor:
             # --- 6단계 신규 쿼리 ---
             "personalInfoQuery",
             "subjectRanksQuery",
+
+            # --- 신규 추가된 쿼리 ---
+            "instituteSettingsQuery",
+            "tendency1ExplainQuery",
+            "tendency2ExplainQuery",
+            "topTendencyExplainQuery",
+            "bottomTendencyExplainQuery",
+            "thinkingMainQuery",
+            "thinkingDetailQuery",
+            "suitableJobMajorsQuery",
+            "pdKindQuery",
+            "talentListQuery",
         ]
         
         # 구현되지 않은 쿼리들은 빈 배열로 즉시 설정

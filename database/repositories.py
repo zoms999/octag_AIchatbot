@@ -22,6 +22,11 @@ from database.cache import DocumentCache
 from database.schemas import ChatDocumentCreate, ChatDocumentResponse, ProcessingResult, ProcessingStatus
 from database.connection import get_async_session
 
+# TransformedDocument import 추가
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from etl.document_transformer import TransformedDocument
+
 logger = logging.getLogger(__name__)
 
 
@@ -228,39 +233,28 @@ class DocumentRepository:
 
     async def upsert(self, document_data: Dict[str, Any]) -> None:
         """
-        Inserts a new document or updates an existing one based on user_id and doc_type.
+        청킹 전략에 맞게 문서를 저장합니다.
+        기존 UPSERT 대신 단순 INSERT를 사용합니다.
         """
         try:
-            # UPSERT 구문을 생성합니다.
-            stmt = insert(ChatDocument).values(
+            # 단순 INSERT 방식으로 변경 (청킹된 문서들은 모두 새로운 문서로 처리)
+            document = ChatDocument(
                 user_id=document_data['user_id'],
                 doc_type=document_data['doc_type'],
                 content=document_data['content'],
                 summary_text=document_data['summary_text'],
                 embedding_vector=document_data['embedding_vector'],
-                doc_metadata=document_data.get('doc_metadata', {}),
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            )
-
-            # `unique_user_doc_type` 충돌 시 업데이트
-            stmt = stmt.on_conflict_do_update(
-                index_elements=[ChatDocument.user_id, ChatDocument.doc_type],
-                set_={
-                    'content': stmt.excluded.content,
-                    'summary_text': stmt.excluded.summary_text,
-                    'embedding_vector': stmt.excluded.embedding_vector,
-                    'doc_metadata': stmt.excluded.doc_metadata,
-                    'updated_at': datetime.utcnow()
-                }
+                doc_metadata=document_data.get('doc_metadata', {})
             )
             
-            await self.session.execute(stmt)
+            self.session.add(document)
             await self.session.flush()
+            logger.info(f"Document inserted successfully for user_id={document_data.get('user_id')}, doc_type={document_data.get('doc_type')}")
+            
         except SQLAlchemyError as e:
             await self.session.rollback()
-            logger.error(f"Upsert failed for (user_id={document_data.get('user_id')}, doc_type={document_data.get('doc_type')}): {e}")
-            raise DocumentRepositoryError(f"Upsert error: {str(e)}")
+            logger.error(f"Insert failed for (user_id={document_data.get('user_id')}, doc_type={document_data.get('doc_type')}): {e}")
+            raise DocumentRepositoryError(f"Insert error: {str(e)}")
 
     # Compatibility/alias methods used by ETL orchestrator and tasks
     async def create(self, document: ChatDocument) -> ChatDocument:
@@ -398,6 +392,57 @@ class UserRepository:
             await self.session.rollback()
             logger.error(f"Error deleting user {user_id}: {e}")
             raise
+
+
+async def save_chunked_documents(session: AsyncSession, user_id: str, documents: List['TransformedDocument']):
+    """
+    특정 사용자의 기존 문서를 모두 삭제한 후, 새로 청킹된 문서들을 삽입합니다.
+    """
+    from etl.document_transformer import TransformedDocument  # 런타임 import로 순환 참조 방지
+    
+    try:
+        # 1. [선 삭제] 이 ETL 작업으로 생성될 사용자의 기존 문서를 모두 삭제
+        logger.info(f"Deleting existing documents for user_id: {user_id}")
+        delete_statement = delete(ChatDocument).where(ChatDocument.user_id == user_id)
+        await session.execute(delete_statement)
+        
+        # 2. [후 삽입] 새로 생성된 문서들을 모두 INSERT
+        logger.info(f"Inserting {len(documents)} new chunked documents for user_id: {user_id}")
+        new_db_documents = []
+        
+        for doc in documents:
+            # embedding_vector가 None인 경우 임시 더미 벡터 사용 (768차원)
+            embedding_vector = doc.embedding_vector
+            if embedding_vector is None:
+                # 768차원의 0으로 채워진 더미 벡터 생성
+                embedding_vector = [0.0] * 768
+                logger.warning(f"Using dummy embedding vector for document {doc.doc_type}")
+            
+            # TransformedDocument 객체를 DB 모델 객체로 변환
+            new_db_documents.append(ChatDocument(
+                user_id=UUID(user_id),  # str을 UUID로 변환
+                doc_type=doc.doc_type,  # DocumentType enum 멤버를 사용
+                content=doc.content,
+                summary_text=doc.summary_text,
+                embedding_vector=embedding_vector,  # 임베딩 단계에서 추가되어야 함
+                doc_metadata=doc.metadata
+            ))
+        
+        if new_db_documents:
+            session.add_all(new_db_documents)
+            await session.commit()
+            logger.info("Successfully saved new documents.")
+        else:
+            logger.warning("No documents to save.")
+            
+    except SQLAlchemyError as e:
+        await session.rollback()
+        logger.error(f"Error saving chunked documents for user {user_id}: {e}")
+        raise DocumentRepositoryError(f"Error saving chunked documents: {str(e)}")
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Unexpected error saving chunked documents for user {user_id}: {e}")
+        raise DocumentRepositoryError(f"Unexpected error: {str(e)}")
 
 
 async def get_document_repository(session: AsyncSession) -> DocumentRepository:

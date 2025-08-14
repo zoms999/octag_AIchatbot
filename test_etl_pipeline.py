@@ -6,11 +6,13 @@ Verifies the implementation of legacy query executor, document transformer, and 
 import asyncio
 import logging
 from typing import Dict, Any, List
+import pytest
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@pytest.mark.asyncio
 async def test_etl_pipeline():
     """Test the complete ETL pipeline foundation"""
     
@@ -123,6 +125,7 @@ async def test_etl_pipeline():
         traceback.print_exc()
         return False
 
+@pytest.mark.asyncio
 async def test_individual_components():
     """Test individual components separately"""
     

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List
 import uuid
+import pytest
 
 # Add project root to Python path
 project_root = Path(__file__).parent
@@ -24,6 +25,7 @@ from etl.logging_config import setup_etl_logging, get_etl_logger, ETLLogContext
 setup_etl_logging(log_level="DEBUG", enable_file_logging=False)
 logger = logging.getLogger(__name__)
 
+@pytest.mark.asyncio
 async def test_etl_orchestrator():
     """Test the ETL orchestrator with mock data"""
     try:
@@ -181,6 +183,7 @@ async def test_etl_orchestrator():
         logger.error(f"✗ ETL Orchestrator test failed: {e}")
         return False
 
+@pytest.mark.asyncio
 async def test_logging_system():
     """Test the ETL logging system"""
     try:
@@ -222,6 +225,7 @@ async def test_logging_system():
         logger.error(f"✗ Logging system test failed: {e}")
         return False
 
+@pytest.mark.asyncio
 async def test_data_validation():
     """Test comprehensive data validation"""
     try:
@@ -289,6 +293,7 @@ async def test_data_validation():
         logger.error(f"✗ Data validation test failed: {e}")
         return False
 
+@pytest.mark.asyncio
 async def test_error_handling_and_rollback():
     """Test error handling and rollback mechanisms"""
     try:
@@ -322,6 +327,7 @@ async def test_error_handling_and_rollback():
         logger.error(f"✗ Error handling test failed: {e}")
         return False
 
+@pytest.mark.asyncio
 async def test_job_tracking_integration():
     """Test job tracking integration"""
     try:
@@ -388,6 +394,7 @@ async def test_job_tracking_integration():
         logger.error(f"✗ Job tracking integration test failed: {e}")
         return False
 
+@pytest.mark.asyncio
 async def test_configuration_and_environment():
     """Test configuration and environment setup"""
     try:
